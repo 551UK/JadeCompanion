@@ -36,20 +36,7 @@ jobs:
           test "$(find packages -maxdepth 1 -type f -name '*.deb' | wc -l | tr -d ' ')" = "1"
           test "$(find packages -maxdepth 1 -type f ! -name '*.deb' | wc -l | tr -d ' ')" = "0"
 
-      - name: Remove previous JadeCompanion releases
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          for tag in v0.1.0 v0.2.0 v0.3.0 v0.4.0 v0.5.0 v0.6.0; do
-            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes || true
-          done
 
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: JadeCompanion-rootless-v0.6.1
-          path: packages/*.deb
-          if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: ncipollo/release-action@v1
