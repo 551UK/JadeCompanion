@@ -29,6 +29,21 @@ jobs:
       - name: Build rootless package
         run: make clean package FINALPACKAGE=1
 
+      - name: Verify release contains only the DEB
+        run: |
+          echo "Package output:"
+          find packages -maxdepth 1 -type f -print
+          test "$(find packages -maxdepth 1 -type f -name '*.deb' | wc -l | tr -d ' ')" = "1"
+          test "$(find packages -maxdepth 1 -type f ! -name '*.deb' | wc -l | tr -d ' ')" = "0"
+
+      - name: Remove previous JadeCompanion releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for tag in v0.1.0 v0.2.0 v0.3.0 v0.4.0 v0.5.0 v0.6.0; do
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes || true
+          done
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -41,20 +56,24 @@ jobs:
         with:
           tag: v0.6.1
           name: JadeCompanion v0.6.1
-          prerelease: true
+          prerelease: false
+          draft: false
           body: |
-            Polished test build after v0.6 successfully opened Apple's Wi-Fi and Bluetooth detail views.
+            JadeCompanion fixes Jade 1.0.5's broken iOS 16 connectivity long-press behaviour.
 
-            Changes:
-            - Keeps the working v0.6 architecture that bypasses Jade's broken Connectivity expansion path.
-            - Explicitly forwards appearance transitions when swapping Apple's stock detail controllers into the companion host.
-            - This is especially important for Bluetooth, whose stock menu refreshes its device list from viewWillAppear:.
-            - Wi-Fi, Bluetooth and AirDrop continue to use Apple's real stock detail controllers.
-            - Airplane Mode and Cellular Data continue to show the real expanded stock Connectivity controller.
-            - Jade's original connectivity long-press path remains suppressed, avoiding the blur-only stuck state.
-            - Normal Jade taps remain unchanged.
+            Jade already detects a hold on its connectivity row, but its original expansion path can leave Jade in a blurred "expanded" state without actually showing the Connectivity interface.
 
-            Primary target: Jade 1.0.5 on iOS 16 + Dopamine rootless.
+            JadeCompanion intercepts that broken connectivity hold before Jade enters the bad state and opens Apple's real Control Center connectivity controllers instead.
+
+            Hold behaviour:
+            1. Wi-Fi: Apple's Wi-Fi detail menu.
+            2. Bluetooth: Apple's Bluetooth device menu.
+            3. AirDrop: Apple's AirDrop menu.
+            4. Airplane Mode: Apple's expanded connectivity panel.
+            5. Cellular Data: Apple's expanded connectivity panel.
+            6. Normal taps remain handled by Jade exactly as before.
+
+            The attached release contains only the rootless DEB. Full details are in the repository README.
           artifacts: packages/*.deb
           artifactErrorsFailBuild: true
           allowUpdates: true
