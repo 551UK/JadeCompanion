@@ -32,27 +32,26 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: JadeCompanion-rootless-v0.3.0
+          name: JadeCompanion-rootless-v0.4.0
           path: packages/*.deb
           if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          tag: v0.3.0
-          name: JadeCompanion v0.3.0
+          tag: v0.4.0
+          name: JadeCompanion v0.4.0
           prerelease: true
           body: |
-            Third test build focused on making the long press attach reliably to Jade 1.0.5.
+            Fourth test build for Jade 1.0.5.
 
-            Changes:
-            - Hooks JadeCardViewController and JadeConnectivityModule directly.
-            - Adds one long-press recognizer to the whole Jade connectivity module, so it no longer depends on JadeConnectivityButton being re-created after SpringBoard starts.
-            - Determines Wi-Fi, Bluetooth, Airplane Mode, Cellular and AirDrop by the real Jade button ivars and touch location.
-            - Resets Jade's conflicting pan/hold recognizers only after a real long press begins, targeting Jade's pre-existing "hold, then next swipe only blurs" bug.
-            - Uses Jade's own expandModuleWithIdentifier: method to open Apple's real Connectivity module.
-            - Wi-Fi, Bluetooth and AirDrop then attempt the stock second-level detail interaction.
-            - Normal Jade taps remain unchanged.
+            Important fix:
+            - v0.3 looked up Jade's connectivity controls as non-underscored ivars only.
+            - Jade exposes names such as wifiButton through accessors while the backing ivars are normally _wifiButton-style names.
+            - That meant a hold could reach the recognizer but fail button identification before the haptic or action fired.
+            - v0.4 now checks the property accessor, exact ivar name and underscored backing ivar.
+            - Jade's own pan and long-press recognizers are also made to wait for JadeCompanion's recognizer only when the touch is actually over a connectivity button.
+            - Normal taps remain unchanged.
 
             Primary target: Jade 1.0.5 on iOS 16 + Dopamine rootless.
           artifacts: packages/*.deb
