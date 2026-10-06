@@ -6,10 +6,10 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: jadecompanion-build
+  group: jadecompanion-release
   cancel-in-progress: true
 
 jobs:
@@ -35,3 +35,26 @@ jobs:
           name: JadeCompanion-rootless-v0.1.0
           path: packages/*.deb
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v0.1.0
+          name: JadeCompanion v0.1.0
+          body: |
+            Initial rootless test release for Jade 1.0.5.
+
+            Adds Haptic Touch / long-press actions to Jade's connectivity buttons while preserving Jade's normal tap behavior.
+
+            - Wi-Fi: opens Apple's Wi-Fi detail menu
+            - Bluetooth: opens Apple's Bluetooth device menu
+            - AirDrop: opens Apple's AirDrop menu
+            - Airplane Mode: opens the expanded connectivity panel
+            - Cellular Data: opens the expanded connectivity panel
+
+            Primary target: iOS 16 + Dopamine rootless.
+          artifacts: packages/*.deb
+          artifactErrorsFailBuild: true
+          allowUpdates: true
+          replacesArtifacts: true
+          makeLatest: true
