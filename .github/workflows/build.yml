@@ -32,28 +32,29 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: JadeCompanion-rootless-v0.2.0
+          name: JadeCompanion-rootless-v0.3.0
           path: packages/*.deb
           if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          tag: v0.2.0
-          name: JadeCompanion v0.2.0
+          tag: v0.3.0
+          name: JadeCompanion v0.3.0
           prerelease: true
           body: |
-            Reworked test build for Jade 1.0.5 after the original v0.1.0 long-press path failed.
+            Third test build focused on making the long press attach reliably to Jade 1.0.5.
 
-            Changes:
-            - Hooks JadeConnectivityButton directly instead of relying on the module lifecycle.
-            - Gives the companion long-press priority over Jade's ancestor pan recognizers to avoid Jade's pre-existing "hold, then next swipe only blurs" state.
-            - Uses Jade's own expandModuleWithIdentifier: path to open Apple's real Connectivity module.
-            - Wi-Fi, Bluetooth and AirDrop then trigger the stock Control Center detail interaction.
-            - Airplane Mode and Cellular Data open the real expanded Connectivity module.
-            - Normal Jade taps remain unchanged.
+Changes:
+- Hooks JadeCardViewController and JadeConnectivityModule directly.
+- Adds one long-press recognizer to the whole Jade connectivity module, so it no longer depends on JadeConnectivityButton being re-created after SpringBoard starts.
+- Determines Wi-Fi, Bluetooth, Airplane Mode, Cellular and AirDrop by the real Jade button ivars and touch location.
+- Resets Jade's conflicting pan/hold recognizers only after a real long press begins, targeting Jade's pre-existing "hold, then next swipe only blurs" bug.
+- Uses Jade's own expandModuleWithIdentifier: method to open Apple's real Connectivity module.
+- Wi-Fi, Bluetooth and AirDrop then attempt the stock second-level detail interaction.
+- Normal Jade taps remain unchanged.
 
-            Primary target: Jade 1.0.5 on iOS 16 + Dopamine rootless.
+Primary target: Jade 1.0.5 on iOS 16 + Dopamine rootless.
           artifacts: packages/*.deb
           artifactErrorsFailBuild: true
           allowUpdates: true
