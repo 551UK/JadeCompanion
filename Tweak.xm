@@ -4,6 +4,7 @@
 #import <objc/message.h>
 #import <substrate.h>
 #import <dlfcn.h>
+#import <stdlib.h>
 
 typedef NS_ENUM(NSInteger, JCConnectivityAction) {
     JCConnectivityActionNone = 0,
