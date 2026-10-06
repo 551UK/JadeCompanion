@@ -281,7 +281,7 @@ static void JCOpenSettingsFallback(JCConnectivityAction action) {
     if (recognizer.state != UIGestureRecognizerStateBegan) return;
 
     UIView *sourceView = recognizer.view;
-    JCConnectivityAction action = [objc_getAssociatedObject(recognizer, kJCActionKey) integerValue];
+    JCConnectivityAction action = (JCConnectivityAction)[objc_getAssociatedObject(recognizer, kJCActionKey) integerValue];
 
     UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
     [feedback prepare];
