@@ -14,16 +14,18 @@ typedef NS_ENUM(NSInteger, JCConnectivityAction) {
     JCConnectivityActionAirDrop,
 };
 
-static const void *kJCLongPressKey = &kJCLongPressKey;
-static const void *kJCActionKey = &kJCActionKey;
+static const void *kJCModuleLongPressKey = &kJCModuleLongPressKey;
 
-static void (*gOrigButtonDidMoveToSuperview)(id, SEL) = NULL;
-static void (*gOrigButtonSetAction)(id, SEL, SEL) = NULL;
-static void (*gOrigConnectivityWillTransition)(id, SEL, BOOL) = NULL;
+static void (*gOrigCardViewWillAppear)(id, SEL, BOOL) = NULL;
+static void (*gOrigCardViewDidLayoutSubviews)(id, SEL) = NULL;
+static void (*gOrigModuleDidMoveToWindow)(id, SEL) = NULL;
+static void (*gOrigModuleLayoutSubviews)(id, SEL) = NULL;
+static void (*gOrigStockWillTransition)(id, SEL, BOOL) = NULL;
 
-static BOOL gButtonHooksInstalled = NO;
+static BOOL gJadeHooksInstalled = NO;
 static BOOL gStockHookInstalled = NO;
-static id gStockConnectivityController = nil;
+static __weak id gCurrentJadeCard = nil;
+static __weak id gStockConnectivityController = nil;
 static JCConnectivityAction gPendingAction = JCConnectivityActionNone;
 
 #pragma mark - Runtime helpers
@@ -49,21 +51,6 @@ static id JCObjectForSelector(id object, NSString *selectorName) {
     return ((id (*)(id, SEL))objc_msgSend)(object, selector);
 }
 
-static UIViewController *JCFindJadeCardController(UIView *view) {
-    Class cardClass = objc_getClass("JadeCardViewController");
-    if (!cardClass || !view) return nil;
-
-    UIResponder *responder = view;
-    while (responder) {
-        if ([responder isKindOfClass:cardClass]) {
-            return (UIViewController *)responder;
-        }
-        responder = responder.nextResponder;
-    }
-
-    return nil;
-}
-
 static void JCLoadConnectivityBundle(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -74,35 +61,107 @@ static void JCLoadConnectivityBundle(void) {
         if (bundle && !bundle.loaded) {
             NSError *error = nil;
             if (![bundle loadAndReturnError:&error]) {
-                NSLog(@"[JadeCompanion] Failed to load ConnectivityModule.bundle: %@", error);
+                NSLog(@"[JadeCompanion] ConnectivityModule.bundle load failed: %@", error);
             }
         }
     });
 }
 
-#pragma mark - Action mapping
+static UIViewController *JCFindJadeCardController(UIView *view) {
+    Class cardClass = objc_getClass("JadeCardViewController");
+    UIResponder *responder = view;
 
-static JCConnectivityAction JCActionForSelector(SEL action) {
-    if (!action) return JCConnectivityActionNone;
+    while (responder) {
+        if (cardClass && [responder isKindOfClass:cardClass]) {
+            return (UIViewController *)responder;
+        }
+        responder = responder.nextResponder;
+    }
 
-    NSString *name = NSStringFromSelector(action);
-    if ([name isEqualToString:@"onWiFiTap:"]) return JCConnectivityActionWiFi;
-    if ([name isEqualToString:@"onBluetoothTap:"]) return JCConnectivityActionBluetooth;
-    if ([name isEqualToString:@"onAirplaneModeTap:"]) return JCConnectivityActionAirplane;
-    if ([name isEqualToString:@"onCellularTap:"]) return JCConnectivityActionCellular;
-    if ([name isEqualToString:@"onAirDropTap:"]) return JCConnectivityActionAirDrop;
+    id card = gCurrentJadeCard;
+    if (cardClass && card && [card isKindOfClass:cardClass]) {
+        return card;
+    }
+    return nil;
+}
+
+#pragma mark - Jade module discovery
+
+static void JCCollectConnectivityModules(UIView *view, NSMutableArray<UIView *> *results) {
+    if (!view) return;
+
+    Class moduleClass = objc_getClass("JadeConnectivityModule");
+    if (moduleClass && [view isKindOfClass:moduleClass]) {
+        [results addObject:view];
+    }
+
+    for (UIView *subview in view.subviews) {
+        JCCollectConnectivityModules(subview, results);
+    }
+}
+
+static JCConnectivityAction JCActionAtLocation(UIView *module, CGPoint pointInModule) {
+    struct {
+        const char *ivarName;
+        JCConnectivityAction action;
+    } entries[] = {
+        {"wifiButton", JCConnectivityActionWiFi},
+        {"bluetoothButton", JCConnectivityActionBluetooth},
+        {"airplaneModeButton", JCConnectivityActionAirplane},
+        {"cellularButton", JCConnectivityActionCellular},
+        {"airDropButton", JCConnectivityActionAirDrop},
+    };
+
+    for (NSUInteger i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
+        UIView *button = JCObjectIvar(module, entries[i].ivarName);
+        if (![button isKindOfClass:[UIView class]] || button.hidden || button.alpha < 0.01) continue;
+
+        CGPoint pointInButton = [module convertPoint:pointInModule toView:button];
+        if ([button pointInside:pointInButton withEvent:nil]) {
+            return entries[i].action;
+        }
+    }
+
     return JCConnectivityActionNone;
 }
 
-static SEL JCButtonAction(id button) {
-    SEL getter = NSSelectorFromString(@"action");
-    if (!button || ![button respondsToSelector:getter]) return NULL;
-    return ((SEL (*)(id, SEL))objc_msgSend)(button, getter);
+static void JCResetConflictingJadeGestures(UIView *module, UIGestureRecognizer *ourRecognizer) {
+    UIView *view = module;
+    NSUInteger depth = 0;
+
+    while (view && depth++ < 14) {
+        for (UIGestureRecognizer *gesture in view.gestureRecognizers) {
+            if (gesture == ourRecognizer) continue;
+
+            if ([gesture isKindOfClass:[UIPanGestureRecognizer class]] ||
+                [gesture isKindOfClass:[UILongPressGestureRecognizer class]]) {
+                BOOL wasEnabled = gesture.enabled;
+                gesture.enabled = NO;
+                gesture.enabled = wasEnabled;
+            }
+        }
+        view = view.superview;
+    }
 }
 
-#pragma mark - Stock connectivity detail presentation
+static void JCMakeJadePansWaitForLongPress(UIView *module, UILongPressGestureRecognizer *longPress) {
+    UIView *view = module.superview;
+    NSUInteger depth = 0;
 
-static id JCStockButtonControllerForAction(JCConnectivityAction action) {
+    while (view && depth++ < 14) {
+        for (UIGestureRecognizer *gesture in view.gestureRecognizers) {
+            if (gesture == longPress) continue;
+            if ([gesture isKindOfClass:[UIPanGestureRecognizer class]]) {
+                [gesture requireGestureRecognizerToFail:longPress];
+            }
+        }
+        view = view.superview;
+    }
+}
+
+#pragma mark - Stock Control Center presentation
+
+static id JCFindStockButtonController(JCConnectivityAction action) {
     id controller = gStockConnectivityController;
     if (!controller) return nil;
 
@@ -111,25 +170,20 @@ static id JCStockButtonControllerForAction(JCConnectivityAction action) {
 
     switch (action) {
         case JCConnectivityActionWiFi:
-            selectors = @[@"wifiButton", @"wifiButtonViewController"];
-            ivars = @[@"_wifiButton", @"_wifiButtonViewController"];
+            selectors = @[@"wifiButton", @"wifiButtonViewController", @"expandedWifiButtonViewController", @"wifiModuleViewController"];
+            ivars = @[@"_wifiButton", @"_wifiButtonViewController", @"_expandedWifiButtonViewController", @"_wifiModuleViewController"];
             break;
+
         case JCConnectivityActionBluetooth:
-            selectors = @[@"bluetoothButton", @"bluetoothButtonViewController"];
-            ivars = @[@"_bluetoothButton", @"_bluetoothButtonViewController"];
+            selectors = @[@"bluetoothButton", @"bluetoothButtonViewController", @"expandedBluetoothButtonViewController", @"bluetoothModuleViewController"];
+            ivars = @[@"_bluetoothButton", @"_bluetoothButtonViewController", @"_expandedBluetoothButtonViewController", @"_bluetoothModuleViewController"];
             break;
+
         case JCConnectivityActionAirDrop:
-            selectors = @[@"airDropButton", @"airDropButtonViewController"];
-            ivars = @[@"_airDropButton", @"_airDropButtonViewController"];
+            selectors = @[@"airDropButton", @"airDropButtonViewController", @"expandedAirDropButtonViewController", @"airDropModuleViewController"];
+            ivars = @[@"_airDropButton", @"_airDropButtonViewController", @"_expandedAirDropButtonViewController", @"_airDropModuleViewController"];
             break;
-        case JCConnectivityActionCellular:
-            selectors = @[@"cellularDataButton", @"cellularDataButtonViewController"];
-            ivars = @[@"_cellularDataButton", @"_cellularDataButtonViewController"];
-            break;
-        case JCConnectivityActionAirplane:
-            selectors = @[@"airplaneButton", @"airplaneButtonViewController"];
-            ivars = @[@"_airplaneButton", @"_airplaneButtonViewController"];
-            break;
+
         default:
             return nil;
     }
@@ -147,20 +201,12 @@ static id JCStockButtonControllerForAction(JCConnectivityAction action) {
     return nil;
 }
 
-static BOOL JCPresentDetailForAction(JCConnectivityAction action) {
-    if (action != JCConnectivityActionWiFi &&
-        action != JCConnectivityActionBluetooth &&
-        action != JCConnectivityActionAirDrop) {
-        return NO;
-    }
+static BOOL JCPresentStockDetail(JCConnectivityAction action) {
+    id buttonController = JCFindStockButtonController(action);
+    if (!buttonController) return NO;
 
-    id buttonController = JCStockButtonControllerForAction(action);
-    if (!buttonController) {
-        NSLog(@"[JadeCompanion] Stock button controller not found for action %ld", (long)action);
-        return NO;
-    }
-
-    // Force the stock button into expanded mode if Jade has not already done it.
+    // Older connectivity button controllers create this manager when their parent
+    // switches to expanded mode. If needed, force that transition on the child.
     id manager = JCObjectIvar(buttonController, "_clickPresentationInteractionManager");
     if (!manager) {
         SEL transition = NSSelectorFromString(@"containerWillTransitionToExpandedContentMode:");
@@ -170,69 +216,54 @@ static BOOL JCPresentDetailForAction(JCConnectivityAction action) {
         manager = JCObjectIvar(buttonController, "_clickPresentationInteractionManager");
     }
 
-    if (!manager) {
-        NSLog(@"[JadeCompanion] Detail interaction manager is missing for %@", NSStringFromClass([buttonController class]));
-        return NO;
-    }
+    if (!manager) return NO;
 
     id interaction = JCObjectIvar(manager, "_clickPresentationInteraction");
     SEL presentSelector = NSSelectorFromString(@"present");
     if (interaction && [interaction respondsToSelector:presentSelector]) {
         ((void (*)(id, SEL))objc_msgSend)(interaction, presentSelector);
-        NSLog(@"[JadeCompanion] Presented stock detail for action %ld using _UIClickPresentationInteraction", (long)action);
         return YES;
     }
 
-    // Fallback for builds where the manager exposes a direct presentation helper.
-    SEL managerPresent = NSSelectorFromString(@"presentViewController");
-    if ([manager respondsToSelector:managerPresent]) {
-        ((void (*)(id, SEL))objc_msgSend)(manager, managerPresent);
-        NSLog(@"[JadeCompanion] Presented stock detail for action %ld using manager fallback", (long)action);
-        return YES;
-    }
-
-    NSLog(@"[JadeCompanion] No supported stock detail presentation path for action %ld", (long)action);
     return NO;
 }
 
 static void JCTryPresentPendingDetail(NSUInteger attempt) {
-    if (gPendingAction == JCConnectivityActionNone) return;
-
     JCConnectivityAction action = gPendingAction;
+    if (action == JCConnectivityActionNone) return;
 
-    if (gStockConnectivityController) {
-        UIView *view = nil;
-        if ([gStockConnectivityController respondsToSelector:@selector(view)]) {
-            view = ((UIView *(*)(id, SEL))objc_msgSend)(gStockConnectivityController, @selector(view));
-        }
-
-        if (view.window && JCPresentDetailForAction(action)) {
-            gPendingAction = JCConnectivityActionNone;
-            return;
-        }
+    id stockController = gStockConnectivityController;
+    UIView *stockView = nil;
+    if (stockController && [stockController respondsToSelector:@selector(view)]) {
+        stockView = ((UIView *(*)(id, SEL))objc_msgSend)(stockController, @selector(view));
     }
 
-    if (attempt < 30) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if (stockView.window && JCPresentStockDetail(action)) {
+        gPendingAction = JCConnectivityActionNone;
+        return;
+    }
+
+    if (attempt < 50) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
             JCTryPresentPendingDetail(attempt + 1);
         });
     } else {
-        NSLog(@"[JadeCompanion] Timed out waiting for expanded stock connectivity module");
+        // The real expanded connectivity module is still useful if a particular
+        // iOS build changes the private second-level controller layout.
         gPendingAction = JCConnectivityActionNone;
     }
 }
 
-static void JCExpandStockConnectivityFromButton(UIView *button, JCConnectivityAction action) {
-    UIViewController *card = JCFindJadeCardController(button);
+static void JCOpenStockConnectivity(UIView *module, JCConnectivityAction action) {
+    UIViewController *card = JCFindJadeCardController(module);
     SEL expandSelector = NSSelectorFromString(@"expandModuleWithIdentifier:");
 
     if (!card || ![card respondsToSelector:expandSelector]) {
-        NSLog(@"[JadeCompanion] Could not find JadeCardViewController from connectivity button");
+        NSLog(@"[JadeCompanion] JadeCardViewController / expandModuleWithIdentifier: not available");
         return;
     }
 
-    // Airplane Mode and Cellular have no useful second-level browser on the iOS 16
-    // connectivity tile, so their hold action stops at the real expanded stock module.
     if (action == JCConnectivityActionWiFi ||
         action == JCConnectivityActionBluetooth ||
         action == JCConnectivityActionAirDrop) {
@@ -250,36 +281,44 @@ static void JCExpandStockConnectivityFromButton(UIView *button, JCConnectivityAc
     }
 }
 
-#pragma mark - Long press gesture
+#pragma mark - Long press recognizer
 
-@interface JCGestureHandler : NSObject <UIGestureRecognizerDelegate>
+@interface JCModuleGestureHandler : NSObject <UIGestureRecognizerDelegate>
 + (instancetype)shared;
-- (void)handleLongPress:(UILongPressGestureRecognizer *)recognizer;
+- (void)handleConnectivityLongPress:(UILongPressGestureRecognizer *)recognizer;
 @end
 
-@implementation JCGestureHandler
+@implementation JCModuleGestureHandler
 
 + (instancetype)shared {
-    static JCGestureHandler *handler;
+    static JCModuleGestureHandler *handler;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        handler = [JCGestureHandler new];
+        handler = [JCModuleGestureHandler new];
     });
     return handler;
 }
 
-- (void)handleLongPress:(UILongPressGestureRecognizer *)recognizer {
+- (void)handleConnectivityLongPress:(UILongPressGestureRecognizer *)recognizer {
     if (recognizer.state != UIGestureRecognizerStateBegan) return;
 
-    JCConnectivityAction action = (JCConnectivityAction)[objc_getAssociatedObject(recognizer, kJCActionKey) integerValue];
-    UIView *button = recognizer.view;
-    if (!button || action == JCConnectivityActionNone) return;
+    UIView *module = recognizer.view;
+    if (!module) return;
 
-    UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    CGPoint point = [recognizer locationInView:module];
+    JCConnectivityAction action = JCActionAtLocation(module, point);
+    if (action == JCConnectivityActionNone) return;
+
+    // Cancel Jade's pre-existing stuck gesture state. This is only done once a
+    // stationary hold has actually won; normal swipes are left alone.
+    JCResetConflictingJadeGestures(module, recognizer);
+
+    UIImpactFeedbackGenerator *feedback =
+        [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
     [feedback prepare];
     [feedback impactOccurred];
 
-    JCExpandStockConnectivityFromButton(button, action);
+    JCOpenStockConnectivity(module, action);
 }
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
@@ -289,90 +328,101 @@ static void JCExpandStockConnectivityFromButton(UIView *button, JCConnectivityAc
 
 @end
 
-static void JCProtectLongPressFromAncestorPans(UIView *button, UILongPressGestureRecognizer *longPress) {
-    UIView *ancestor = button.superview;
-    NSUInteger depth = 0;
+static void JCConfigureConnectivityModule(UIView *module) {
+    if (!module) return;
 
-    while (ancestor && depth++ < 12) {
-        for (UIGestureRecognizer *gesture in ancestor.gestureRecognizers) {
-            if (gesture == longPress) continue;
+    UILongPressGestureRecognizer *longPress =
+        objc_getAssociatedObject(module, kJCModuleLongPressKey);
 
-            if ([gesture isKindOfClass:[UIPanGestureRecognizer class]] ||
-                [gesture isKindOfClass:[UILongPressGestureRecognizer class]]) {
-                // This fixes Jade's pre-existing "hold, then next swipe only blurs" state:
-                // a real hold wins first; a normal swipe quickly makes our recognizer fail
-                // due to movement and Jade's pan proceeds normally.
-                [gesture requireGestureRecognizerToFail:longPress];
-            }
-        }
-        ancestor = ancestor.superview;
-    }
-}
-
-static void JCConfigureButton(id object) {
-    if (![object isKindOfClass:[UIView class]]) return;
-
-    UIView *button = (UIView *)object;
-    JCConnectivityAction action = JCActionForSelector(JCButtonAction(object));
-
-    UILongPressGestureRecognizer *existing = objc_getAssociatedObject(button, kJCLongPressKey);
-
-    if (action == JCConnectivityActionNone) {
-        if (existing) {
-            [button removeGestureRecognizer:existing];
-            objc_setAssociatedObject(button, kJCLongPressKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        return;
-    }
-
-    if (!existing) {
-        UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc]
-            initWithTarget:[JCGestureHandler shared]
-                    action:@selector(handleLongPress:)];
+    if (!longPress) {
+        longPress = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:[JCModuleGestureHandler shared]
+                    action:@selector(handleConnectivityLongPress:)];
 
         longPress.minimumPressDuration = 0.38;
         longPress.allowableMovement = 12.0;
         longPress.cancelsTouchesInView = YES;
         longPress.delaysTouchesBegan = NO;
-        longPress.delegate = [JCGestureHandler shared];
+        longPress.delegate = [JCModuleGestureHandler shared];
 
-        [button addGestureRecognizer:longPress];
-        objc_setAssociatedObject(button, kJCLongPressKey, longPress, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        existing = longPress;
+        module.userInteractionEnabled = YES;
+        [module addGestureRecognizer:longPress];
+
+        objc_setAssociatedObject(module,
+                                 kJCModuleLongPressKey,
+                                 longPress,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    objc_setAssociatedObject(existing, kJCActionKey, @(action), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    JCMakeJadePansWaitForLongPress(module, longPress);
+}
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        JCProtectLongPressFromAncestorPans(button, existing);
-    });
+static void JCConfigureCard(id card) {
+    if (![card isKindOfClass:[UIViewController class]]) return;
+
+    gCurrentJadeCard = card;
+
+    UIView *rootView = ((UIViewController *)card).view;
+    if (!rootView) return;
+
+    NSMutableArray<UIView *> *modules = [NSMutableArray array];
+    JCCollectConnectivityModules(rootView, modules);
+
+    for (UIView *module in modules) {
+        JCConfigureConnectivityModule(module);
+    }
 }
 
 #pragma mark - Hooks
 
-static void JCHookedButtonDidMoveToSuperview(id self, SEL _cmd) {
-    if (gOrigButtonDidMoveToSuperview) {
-        gOrigButtonDidMoveToSuperview(self, _cmd);
+static void JCHookedCardViewWillAppear(id self, SEL _cmd, BOOL animated) {
+    if (gOrigCardViewWillAppear) {
+        gOrigCardViewWillAppear(self, _cmd, animated);
     }
-    JCConfigureButton(self);
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        JCConfigureCard(self);
+    });
 }
 
-static void JCHookedButtonSetAction(id self, SEL _cmd, SEL action) {
-    if (gOrigButtonSetAction) {
-        gOrigButtonSetAction(self, _cmd, action);
+static void JCHookedCardViewDidLayoutSubviews(id self, SEL _cmd) {
+    if (gOrigCardViewDidLayoutSubviews) {
+        gOrigCardViewDidLayoutSubviews(self, _cmd);
     }
-    JCConfigureButton(self);
+    JCConfigureCard(self);
 }
 
-static void JCHookedConnectivityWillTransition(id self, SEL _cmd, BOOL expanded) {
-    if (gOrigConnectivityWillTransition) {
-        gOrigConnectivityWillTransition(self, _cmd, expanded);
+static void JCHookedModuleDidMoveToWindow(id self, SEL _cmd) {
+    if (gOrigModuleDidMoveToWindow) {
+        gOrigModuleDidMoveToWindow(self, _cmd);
+    }
+
+    if ([self isKindOfClass:[UIView class]] && ((UIView *)self).window) {
+        JCConfigureConnectivityModule((UIView *)self);
+    }
+}
+
+static void JCHookedModuleLayoutSubviews(id self, SEL _cmd) {
+    if (gOrigModuleLayoutSubviews) {
+        gOrigModuleLayoutSubviews(self, _cmd);
+    }
+
+    if ([self isKindOfClass:[UIView class]]) {
+        JCConfigureConnectivityModule((UIView *)self);
+    }
+}
+
+static void JCHookedStockWillTransition(id self, SEL _cmd, BOOL expanded) {
+    if (gOrigStockWillTransition) {
+        gOrigStockWillTransition(self, _cmd, expanded);
     }
 
     if (expanded) {
         gStockConnectivityController = self;
+
         if (gPendingAction != JCConnectivityActionNone) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
                 JCTryPresentPendingDetail(0);
             });
         }
@@ -384,40 +434,59 @@ static void JCHookedConnectivityWillTransition(id self, SEL _cmd, BOOL expanded)
 static void JCTryInstallHooks(NSUInteger attempt) {
     JCLoadConnectivityBundle();
 
-    if (!gButtonHooksInstalled) {
-        Class buttonClass = objc_getClass("JadeConnectivityButton");
-        if (buttonClass) {
-            MSHookMessageEx(buttonClass,
-                            NSSelectorFromString(@"didMoveToSuperview"),
-                            (IMP)JCHookedButtonDidMoveToSuperview,
-                            (IMP *)&gOrigButtonDidMoveToSuperview);
+    if (!gJadeHooksInstalled) {
+        Class cardClass = objc_getClass("JadeCardViewController");
+        Class moduleClass = objc_getClass("JadeConnectivityModule");
 
-            MSHookMessageEx(buttonClass,
-                            NSSelectorFromString(@"setAction:"),
-                            (IMP)JCHookedButtonSetAction,
-                            (IMP *)&gOrigButtonSetAction);
+        Method cardWillAppear = cardClass ? class_getInstanceMethod(cardClass, @selector(viewWillAppear:)) : NULL;
+        Method cardDidLayout = cardClass ? class_getInstanceMethod(cardClass, @selector(viewDidLayoutSubviews)) : NULL;
+        Method moduleDidMove = moduleClass ? class_getInstanceMethod(moduleClass, @selector(didMoveToWindow)) : NULL;
+        Method moduleLayout = moduleClass ? class_getInstanceMethod(moduleClass, @selector(layoutSubviews)) : NULL;
 
-            gButtonHooksInstalled = YES;
-            NSLog(@"[JadeCompanion] JadeConnectivityButton hooks installed");
+        if (cardClass && moduleClass && cardWillAppear && cardDidLayout && moduleDidMove && moduleLayout) {
+            MSHookMessageEx(cardClass,
+                            @selector(viewWillAppear:),
+                            (IMP)JCHookedCardViewWillAppear,
+                            (IMP *)&gOrigCardViewWillAppear);
+
+            MSHookMessageEx(cardClass,
+                            @selector(viewDidLayoutSubviews),
+                            (IMP)JCHookedCardViewDidLayoutSubviews,
+                            (IMP *)&gOrigCardViewDidLayoutSubviews);
+
+            MSHookMessageEx(moduleClass,
+                            @selector(didMoveToWindow),
+                            (IMP)JCHookedModuleDidMoveToWindow,
+                            (IMP *)&gOrigModuleDidMoveToWindow);
+
+            MSHookMessageEx(moduleClass,
+                            @selector(layoutSubviews),
+                            (IMP)JCHookedModuleLayoutSubviews,
+                            (IMP *)&gOrigModuleLayoutSubviews);
+
+            gJadeHooksInstalled = YES;
+            NSLog(@"[JadeCompanion] Jade 1.0.5 card/module hooks installed");
         }
     }
 
     if (!gStockHookInstalled) {
         Class stockClass = objc_getClass("CCUIConnectivityModuleViewController");
-        SEL transition = NSSelectorFromString(@"willTransitionToExpandedContentMode:");
+        SEL transitionSelector = NSSelectorFromString(@"willTransitionToExpandedContentMode:");
 
-        if (stockClass && class_getInstanceMethod(stockClass, transition)) {
+        if (stockClass && class_getInstanceMethod(stockClass, transitionSelector)) {
             MSHookMessageEx(stockClass,
-                            transition,
-                            (IMP)JCHookedConnectivityWillTransition,
-                            (IMP *)&gOrigConnectivityWillTransition);
+                            transitionSelector,
+                            (IMP)JCHookedStockWillTransition,
+                            (IMP *)&gOrigStockWillTransition);
+
             gStockHookInstalled = YES;
-            NSLog(@"[JadeCompanion] Stock connectivity transition hook installed");
+            NSLog(@"[JadeCompanion] Stock connectivity hook installed");
         }
     }
 
-    if ((!gButtonHooksInstalled || !gStockHookInstalled) && attempt < 40) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    if ((!gJadeHooksInstalled || !gStockHookInstalled) && attempt < 80) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
             JCTryInstallHooks(attempt + 1);
         });
     }
