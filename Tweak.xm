@@ -51,6 +51,23 @@ static id JCObjectForSelector(id object, NSString *selectorName) {
     return ((id (*)(id, SEL))objc_msgSend)(object, selector);
 }
 
+static id JCJadeButton(id module, NSString *name) {
+    if (!module || name.length == 0) return nil;
+
+    // Jade exposes names such as wifiButton as Objective-C accessors, while the
+    // backing ivars are normally underscored (_wifiButton). v0.3 only checked
+    // the non-underscored ivar name, so a valid hold could be detected but then
+    // discarded before the haptic/action ever ran.
+    id value = JCObjectForSelector(module, name);
+    if (value) return value;
+
+    value = JCObjectIvar(module, name.UTF8String);
+    if (value) return value;
+
+    NSString *underscored = [@"_" stringByAppendingString:name];
+    return JCObjectIvar(module, underscored.UTF8String);
+}
+
 static void JCLoadConnectivityBundle(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -102,18 +119,18 @@ static void JCCollectConnectivityModules(UIView *view, NSMutableArray<UIView *> 
 
 static JCConnectivityAction JCActionAtLocation(UIView *module, CGPoint pointInModule) {
     struct {
-        const char *ivarName;
+        __unsafe_unretained NSString *name;
         JCConnectivityAction action;
     } entries[] = {
-        {"wifiButton", JCConnectivityActionWiFi},
-        {"bluetoothButton", JCConnectivityActionBluetooth},
-        {"airplaneModeButton", JCConnectivityActionAirplane},
-        {"cellularButton", JCConnectivityActionCellular},
-        {"airDropButton", JCConnectivityActionAirDrop},
+        {@"wifiButton", JCConnectivityActionWiFi},
+        {@"bluetoothButton", JCConnectivityActionBluetooth},
+        {@"airplaneModeButton", JCConnectivityActionAirplane},
+        {@"cellularButton", JCConnectivityActionCellular},
+        {@"airDropButton", JCConnectivityActionAirDrop},
     };
 
     for (NSUInteger i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
-        UIView *button = JCObjectIvar(module, entries[i].ivarName);
+        UIView *button = JCJadeButton(module, entries[i].name);
         if (![button isKindOfClass:[UIView class]] || button.hidden || button.alpha < 0.01) continue;
 
         CGPoint pointInButton = [module convertPoint:pointInModule toView:button];
@@ -144,14 +161,16 @@ static void JCResetConflictingJadeGestures(UIView *module, UIGestureRecognizer *
     }
 }
 
-static void JCMakeJadePansWaitForLongPress(UIView *module, UILongPressGestureRecognizer *longPress) {
-    UIView *view = module.superview;
+static void JCMakeJadeGesturesWaitForLongPress(UIView *module, UILongPressGestureRecognizer *longPress) {
+    UIView *view = module;
     NSUInteger depth = 0;
 
     while (view && depth++ < 14) {
         for (UIGestureRecognizer *gesture in view.gestureRecognizers) {
             if (gesture == longPress) continue;
-            if ([gesture isKindOfClass:[UIPanGestureRecognizer class]]) {
+
+            if ([gesture isKindOfClass:[UIPanGestureRecognizer class]] ||
+                [gesture isKindOfClass:[UILongPressGestureRecognizer class]]) {
                 [gesture requireGestureRecognizerToFail:longPress];
             }
         }
@@ -321,6 +340,14 @@ static void JCOpenStockConnectivity(UIView *module, JCConnectivityAction action)
     JCOpenStockConnectivity(module, action);
 }
 
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    UIView *module = gestureRecognizer.view;
+    if (!module) return NO;
+
+    CGPoint point = [gestureRecognizer locationInView:module];
+    return JCActionAtLocation(module, point) != JCConnectivityActionNone;
+}
+
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
     return NO;
@@ -354,7 +381,7 @@ static void JCConfigureConnectivityModule(UIView *module) {
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    JCMakeJadePansWaitForLongPress(module, longPress);
+    JCMakeJadeGesturesWaitForLongPress(module, longPress);
 }
 
 static void JCConfigureCard(id card) {
