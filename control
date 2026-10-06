@@ -1,6 +1,6 @@
 Package: com.551uk.jadecompanion
 Name: JadeCompanion
-Version: 0.4.0
+Version: 0.5.0
 Architecture: iphoneos-arm64
 Description: Adds Haptic Touch detail actions to Jade 1.0.5 connectivity buttons while keeping Jade's normal tap behavior unchanged.
 Author: 551UK
