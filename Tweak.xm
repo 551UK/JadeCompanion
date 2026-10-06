@@ -79,9 +79,6 @@ static void JCLoadControlCenterFrameworks(void) {
                RTLD_LAZY | RTLD_GLOBAL);
         dlopen("/System/Library/PrivateFrameworks/ControlCenterUI.framework/ControlCenterUI",
                RTLD_LAZY | RTLD_GLOBAL);
-        dlopen("/System/Library/PrivateFrameworks/ControlCenterServices.framework/ControlCenterServices",
-               RTLD_LAZY | RTLD_GLOBAL);
-
         NSBundle *bundle =
             [NSBundle bundleWithPath:@"/System/Library/ControlCenter/Bundles/ConnectivityModule.bundle"];
 
@@ -171,42 +168,6 @@ static UIViewController *JCPresenterForView(UIView *sourceView) {
     return nil;
 }
 
-static void JCShowMessage(UIView *sourceView, NSString *message) {
-    UIWindow *window = sourceView.window;
-    if (!window || message.length == 0) return;
-
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
-    label.text = message;
-    label.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
-    label.textAlignment = NSTextAlignmentCenter;
-    label.textColor = UIColor.whiteColor;
-    label.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.94];
-    label.numberOfLines = 2;
-    label.layer.cornerRadius = 12.0;
-    label.clipsToBounds = YES;
-
-    CGFloat width = MIN(CGRectGetWidth(window.bounds) - 32.0, 390.0);
-    label.frame = CGRectMake((CGRectGetWidth(window.bounds) - width) / 2.0,
-                             70.0,
-                             width,
-                             58.0);
-    label.alpha = 0.0;
-
-    [window addSubview:label];
-
-    [UIView animateWithDuration:0.16 animations:^{
-        label.alpha = 1.0;
-    } completion:^(__unused BOOL finished) {
-        [UIView animateWithDuration:0.2
-                              delay:1.8
-                            options:0
-                         animations:^{
-            label.alpha = 0.0;
-        } completion:^(__unused BOOL finished2) {
-            [label removeFromSuperview];
-        }];
-    }];
-}
 
 #pragma mark - Stock Connectivity creation
 
@@ -409,7 +370,6 @@ static UIViewController *JCDetailControllerForAction(UIViewController *connectiv
 @property (nonatomic, strong) UIViewController *detailController;
 @property (nonatomic, strong) id contentModuleContext;
 @property (nonatomic, strong) id connectivityModule;
-@property (nonatomic, assign) JCConnectivityAction action;
 - (void)showController:(UIViewController *)controller;
 @end
 
@@ -530,7 +490,7 @@ static UIViewController *JCDetailControllerForAction(UIViewController *connectiv
 
 @end
 
-static __strong JCConnectivityHostViewController *gCurrentHost = nil;
+static __weak JCConnectivityHostViewController *gCurrentHost = nil;
 
 static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction action) {
     if (gCurrentHost.presentingViewController) {
@@ -544,8 +504,7 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
         JCNewConnectivityViewController(context, &module);
 
     if (!connectivityController) {
-        JCShowMessage(sourceView,
-                      @"JadeCompanion: Apple's Connectivity controller could not be created");
+        NSLog(@"[JadeCompanion] Apple's Connectivity controller could not be created");
         return;
     }
 
@@ -557,8 +516,7 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
 
     UIViewController *presenter = JCPresenterForView(sourceView);
     if (!presenter) {
-        JCShowMessage(sourceView,
-                      @"JadeCompanion: no presentation controller was available");
+        NSLog(@"[JadeCompanion] No presentation controller was available");
         return;
     }
 
@@ -568,7 +526,6 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
     host.contentModuleContext = context;
     host.connectivityModule = module;
     host.connectivityController = connectivityController;
-    host.action = action;
 
     gCurrentHost = host;
 
@@ -600,10 +557,8 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
                     // list from viewWillAppear:.
                     [host showController:detail];
                 } else {
-                    JCShowMessage(sourceView,
-                                  [NSString stringWithFormat:
-                                      @"JadeCompanion: %@ detail unavailable — showing stock Connectivity",
-                                      JCActionName(action)]);
+                    NSLog(@"[JadeCompanion] %@ detail unavailable; showing stock Connectivity instead",
+                          JCActionName(action));
                 }
             });
         }
