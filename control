@@ -2,7 +2,7 @@ Package: com.551uk.jadecompanion
 Name: JadeCompanion
 Version: 0.6.1
 Architecture: iphoneos-arm64
-Description: Fixes Jade 1.0.5 connectivity long-press menus on iOS 16 while keeping normal tap behavior unchanged.
+Description: Fixes Jade's connectivity hold menus on iOS 16 and opens the proper Control Center views.
 Author: 551UK
 Maintainer: 551UK
 Section: Tweaks
