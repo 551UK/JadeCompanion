@@ -36,8 +36,6 @@ jobs:
           test "$(find packages -maxdepth 1 -type f -name '*.deb' | wc -l | tr -d ' ')" = "1"
           test "$(find packages -maxdepth 1 -type f ! -name '*.deb' | wc -l | tr -d ' ')" = "0"
 
-
-
       - name: Publish GitHub Release
         uses: ncipollo/release-action@v1
         with:
@@ -46,21 +44,11 @@ jobs:
           prerelease: false
           draft: false
           body: |
-            JadeCompanion fixes Jade 1.0.5's broken iOS 16 connectivity long-press behaviour.
+            Fixes Jade's broken connectivity hold menus on iOS 16.
 
-            Jade already detects a hold on its connectivity row, but its original expansion path can leave Jade in a blurred "expanded" state without actually showing the Connectivity interface.
+            Hold Wi-Fi, Bluetooth, AirDrop, Airplane Mode or Cellular Data to open the proper Control Center connectivity views.
 
-            JadeCompanion intercepts that broken connectivity hold before Jade enters the bad state and opens Apple's real Control Center connectivity controllers instead.
-
-            Hold behaviour:
-            1. Wi-Fi: Apple's Wi-Fi detail menu.
-            2. Bluetooth: Apple's Bluetooth device menu.
-            3. AirDrop: Apple's AirDrop menu.
-            4. Airplane Mode: Apple's expanded connectivity panel.
-            5. Cellular Data: Apple's expanded connectivity panel.
-            6. Normal taps remain handled by Jade exactly as before.
-
-            The attached release contains only the rootless DEB. Full details are in the repository README.
+            Normal taps still work through Jade exactly as before, and the old blur-only bug after holding a connectivity button is fixed.
           artifacts: packages/*.deb
           artifactErrorsFailBuild: true
           allowUpdates: true
