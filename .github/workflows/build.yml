@@ -32,26 +32,28 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: JadeCompanion-rootless-v0.4.0
+          name: JadeCompanion-rootless-v0.5.0
           path: packages/*.deb
           if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          tag: v0.4.0
-          name: JadeCompanion v0.4.0
+          tag: v0.5.0
+          name: JadeCompanion v0.5.0
           prerelease: true
           body: |
-            Fourth test build for Jade 1.0.5.
+            Fifth test build for Jade 1.0.5.
 
-            Important fix:
-            - v0.3 looked up Jade's connectivity controls as non-underscored ivars only.
-            - Jade exposes names such as wifiButton through accessors while the backing ivars are normally _wifiButton-style names.
-            - That meant a hold could reach the recognizer but fail button identification before the haptic or action fired.
-            - v0.4 now checks the property accessor, exact ivar name and underscored backing ivar.
-            - Jade's own pan and long-press recognizers are also made to wait for JadeCompanion's recognizer only when the touch is actually over a connectivity button.
-            - Normal taps remain unchanged.
+            Major change:
+            - Stops adding a separate long-press recognizer.
+            - Hooks Jade's own built-in JadeFullWidthModule handleLongPress: method directly.
+            - Jade already installs this recognizer itself and uses AudioServices haptic feedback on hold.
+            - For JadeConnectivityModule only, JadeCompanion replaces that handler instead of calling Jade's original one.
+            - This also targets Jade's existing "hold a connectivity button, then the next Jade swipe only blurs" bug by preventing Jade's broken connectivity long-press path from running.
+            - Wi-Fi, Bluetooth and AirDrop attempt to open the real stock Control Center connectivity detail.
+            - Airplane Mode and Cellular open the real expanded stock Connectivity module.
+            - A temporary on-screen diagnostic message appears only if JadeCompanion detects the hold but Apple's stock view does not open. This removes any ambiguity from Jade's own haptic feedback.
 
             Primary target: Jade 1.0.5 on iOS 16 + Dopamine rootless.
           artifacts: packages/*.deb
