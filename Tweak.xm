@@ -15,17 +15,16 @@ typedef NS_ENUM(NSInteger, JCConnectivityAction) {
     JCConnectivityActionAirDrop,
 };
 
-static void (*gOrigFullWidthHandleLongPress)(id, SEL, UILongPressGestureRecognizer *) = NULL;
-static void (*gOrigStockWillTransition)(id, SEL, BOOL) = NULL;
+static NSString * const JCConnectivityIdentifier = @"com.apple.control-center.ConnectivityModule";
 
-static __weak id gStockConnectivityController = nil;
-static JCConnectivityAction gPendingAction = JCConnectivityActionNone;
+static void (*gOrigFullWidthHandleLongPress)(id, SEL, UILongPressGestureRecognizer *) = NULL;
 static BOOL gHooksInstalled = NO;
 
 #pragma mark - Runtime helpers
 
 static Ivar JCIvarForObject(id object, const char *name) {
     if (!object || !name) return NULL;
+
     for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
         Ivar ivar = class_getInstanceVariable(cls, name);
         if (ivar) return ivar;
@@ -40,9 +39,26 @@ static id JCObjectIvar(id object, const char *name) {
 
 static id JCObjectForSelector(id object, NSString *selectorName) {
     if (!object || selectorName.length == 0) return nil;
+
     SEL selector = NSSelectorFromString(selectorName);
     if (![object respondsToSelector:selector]) return nil;
+
     return ((id (*)(id, SEL))objc_msgSend)(object, selector);
+}
+
+static void JCVoidBool(id object, NSString *selectorName, BOOL value) {
+    if (!object) return;
+
+    SEL selector = NSSelectorFromString(selectorName);
+    if ([object respondsToSelector:selector]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(object, selector, value);
+    }
+}
+
+static id JCAllocInit(Class cls) {
+    if (!cls) return nil;
+    id object = ((id (*)(id, SEL))objc_msgSend)((id)cls, @selector(alloc));
+    return ((id (*)(id, SEL))objc_msgSend)(object, @selector(init));
 }
 
 static id JCJadeButton(id module, NSString *name) {
@@ -56,23 +72,31 @@ static id JCJadeButton(id module, NSString *name) {
     return JCObjectIvar(module, underscored.UTF8String);
 }
 
-static void JCLoadConnectivityBundle(void) {
+static void JCLoadControlCenterFrameworks(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         dlopen("/System/Library/PrivateFrameworks/ControlCenterUIKit.framework/ControlCenterUIKit",
                RTLD_LAZY | RTLD_GLOBAL);
+        dlopen("/System/Library/PrivateFrameworks/ControlCenterUI.framework/ControlCenterUI",
+               RTLD_LAZY | RTLD_GLOBAL);
+        dlopen("/System/Library/PrivateFrameworks/ControlCenterServices.framework/ControlCenterServices",
+               RTLD_LAZY | RTLD_GLOBAL);
 
         NSBundle *bundle =
             [NSBundle bundleWithPath:@"/System/Library/ControlCenter/Bundles/ConnectivityModule.bundle"];
+
         if (bundle && !bundle.loaded) {
             [bundle load];
         }
     });
 }
 
-#pragma mark - Jade discovery
+#pragma mark - Jade button mapping
 
 static JCConnectivityAction JCActionAtLocation(id module, CGPoint point) {
+    UIView *moduleView = [module isKindOfClass:[UIView class]] ? (UIView *)module : nil;
+    if (!moduleView) return JCConnectivityActionNone;
+
     struct {
         __unsafe_unretained NSString *name;
         JCConnectivityAction action;
@@ -84,15 +108,14 @@ static JCConnectivityAction JCActionAtLocation(id module, CGPoint point) {
         {@"airDropButton", JCConnectivityActionAirDrop},
     };
 
-    UIView *moduleView = [module isKindOfClass:[UIView class]] ? (UIView *)module : nil;
-    if (!moduleView) return JCConnectivityActionNone;
-
     for (NSUInteger i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
         UIView *button = JCJadeButton(module, entries[i].name);
-        if (![button isKindOfClass:[UIView class]] || button.hidden || button.alpha < 0.01) continue;
+        if (![button isKindOfClass:[UIView class]] || button.hidden || button.alpha < 0.01) {
+            continue;
+        }
 
-        CGPoint p = [moduleView convertPoint:point toView:button];
-        if ([button pointInside:p withEvent:nil]) {
+        CGPoint pointInButton = [moduleView convertPoint:point toView:button];
+        if ([button pointInside:pointInButton withEvent:nil]) {
             return entries[i].action;
         }
     }
@@ -100,79 +123,64 @@ static JCConnectivityAction JCActionAtLocation(id module, CGPoint point) {
     return JCConnectivityActionNone;
 }
 
-static UIViewController *JCFindCardInControllerTree(UIViewController *controller, UIView *module) {
-    if (!controller) return nil;
-
-    Class cardClass = objc_getClass("JadeCardViewController");
-    if (cardClass && [controller isKindOfClass:cardClass]) {
-        id connectivity = JCObjectIvar(controller, "_connectivityModule");
-        if (!connectivity) connectivity = JCObjectIvar(controller, "connectivityModule");
-        if (!connectivity || connectivity == module) {
-            return controller;
-        }
-    }
-
-    UIViewController *presented = controller.presentedViewController;
-    UIViewController *match = JCFindCardInControllerTree(presented, module);
-    if (match) return match;
-
-    for (UIViewController *child in controller.childViewControllers) {
-        match = JCFindCardInControllerTree(child, module);
-        if (match) return match;
-    }
-
-    return nil;
-}
-
-static UIViewController *JCFindJadeCard(UIView *module) {
-    Class cardClass = objc_getClass("JadeCardViewController");
-
-    UIResponder *responder = module;
-    while (responder) {
-        if (cardClass && [responder isKindOfClass:cardClass]) {
-            return (UIViewController *)responder;
-        }
-        responder = responder.nextResponder;
-    }
-
-    UIWindow *window = module.window;
-    if (window.rootViewController) {
-        UIViewController *match = JCFindCardInControllerTree(window.rootViewController, module);
-        if (match) return match;
-    }
-
-    for (UIWindow *candidate in [UIApplication sharedApplication].windows) {
-        UIViewController *match = JCFindCardInControllerTree(candidate.rootViewController, module);
-        if (match) return match;
-    }
-
-    return nil;
-}
-
-#pragma mark - Test feedback
-
 static NSString *JCActionName(JCConnectivityAction action) {
     switch (action) {
         case JCConnectivityActionWiFi: return @"Wi-Fi";
         case JCConnectivityActionBluetooth: return @"Bluetooth";
-        case JCConnectivityActionAirplane: return @"Airplane";
-        case JCConnectivityActionCellular: return @"Cellular";
+        case JCConnectivityActionAirplane: return @"Airplane Mode";
+        case JCConnectivityActionCellular: return @"Cellular Data";
         case JCConnectivityActionAirDrop: return @"AirDrop";
-        default: return @"Unknown";
+        default: return @"Connectivity";
     }
 }
 
-static void JCShowFailureToast(UIView *module, JCConnectivityAction action) {
-    UIWindow *window = module.window;
-    if (!window) return;
+#pragma mark - Presentation helpers
+
+static UIViewController *JCTopViewController(UIViewController *controller) {
+    if (!controller) return nil;
+
+    UIViewController *presented = controller.presentedViewController;
+    if (presented && !presented.isBeingDismissed) {
+        return JCTopViewController(presented);
+    }
+
+    if ([controller isKindOfClass:[UINavigationController class]]) {
+        return JCTopViewController(((UINavigationController *)controller).visibleViewController);
+    }
+
+    if ([controller isKindOfClass:[UITabBarController class]]) {
+        return JCTopViewController(((UITabBarController *)controller).selectedViewController);
+    }
+
+    return controller;
+}
+
+static UIViewController *JCPresenterForView(UIView *sourceView) {
+    UIWindow *window = sourceView.window;
+
+    if (window.rootViewController) {
+        return JCTopViewController(window.rootViewController);
+    }
+
+    for (UIWindow *candidate in [UIApplication sharedApplication].windows.reverseObjectEnumerator) {
+        if (!candidate.hidden && candidate.alpha > 0.01 && candidate.rootViewController) {
+            return JCTopViewController(candidate.rootViewController);
+        }
+    }
+
+    return nil;
+}
+
+static void JCShowMessage(UIView *sourceView, NSString *message) {
+    UIWindow *window = sourceView.window;
+    if (!window || message.length == 0) return;
 
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
-    label.text = [NSString stringWithFormat:@"JadeCompanion: %@ hold detected — stock view did not open",
-                  JCActionName(action)];
+    label.text = message;
     label.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
     label.textAlignment = NSTextAlignmentCenter;
     label.textColor = UIColor.whiteColor;
-    label.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.92];
+    label.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.94];
     label.numberOfLines = 2;
     label.layer.cornerRadius = 12.0;
     label.clipsToBounds = YES;
@@ -181,15 +189,16 @@ static void JCShowFailureToast(UIView *module, JCConnectivityAction action) {
     label.frame = CGRectMake((CGRectGetWidth(window.bounds) - width) / 2.0,
                              70.0,
                              width,
-                             54.0);
+                             58.0);
     label.alpha = 0.0;
+
     [window addSubview:label];
 
     [UIView animateWithDuration:0.16 animations:^{
         label.alpha = 1.0;
     } completion:^(__unused BOOL finished) {
         [UIView animateWithDuration:0.2
-                              delay:1.4
+                              delay:1.8
                             options:0
                          animations:^{
             label.alpha = 0.0;
@@ -199,47 +208,157 @@ static void JCShowFailureToast(UIView *module, JCConnectivityAction action) {
     }];
 }
 
-#pragma mark - Stock detail discovery
+#pragma mark - Stock Connectivity creation
 
-static BOOL JCClassNameMatchesAction(id object, JCConnectivityAction action) {
-    if (!object) return NO;
-    NSString *name = NSStringFromClass([object class]).lowercaseString;
+static id JCNewContentModuleContext(void) {
+    Class contextClass = objc_getClass("CCUIContentModuleContext");
+    if (!contextClass) return nil;
 
-    switch (action) {
-        case JCConnectivityActionWiFi:
-            return [name containsString:@"wifi"];
-        case JCConnectivityActionBluetooth:
-            return [name containsString:@"bluetooth"];
-        case JCConnectivityActionAirDrop:
-            return [name containsString:@"airdrop"];
-        default:
-            return NO;
+    id context = ((id (*)(id, SEL))objc_msgSend)((id)contextClass, @selector(alloc));
+    SEL initSelector = NSSelectorFromString(@"initWithModuleIdentifier:");
+
+    if ([context respondsToSelector:initSelector]) {
+        context = ((id (*)(id, SEL, id))objc_msgSend)(context,
+                                                       initSelector,
+                                                       JCConnectivityIdentifier);
+    } else {
+        context = ((id (*)(id, SEL))objc_msgSend)(context, @selector(init));
     }
+
+    Class managerClass = objc_getClass("CCUIModuleInstanceManager");
+    SEL sharedSelector = NSSelectorFromString(@"sharedInstance");
+    id manager = nil;
+
+    if (managerClass && [managerClass respondsToSelector:sharedSelector]) {
+        manager = ((id (*)(id, SEL))objc_msgSend)((id)managerClass, sharedSelector);
+    }
+
+    SEL setDelegate = NSSelectorFromString(@"setDelegate:");
+    if (context && manager && [context respondsToSelector:setDelegate]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(context, setDelegate, manager);
+    }
+
+    return context;
 }
 
-static id JCFindMatchingObjectInIvars(id object, JCConnectivityAction action, NSUInteger depth) {
-    if (!object || depth > 2) return nil;
-    if (JCClassNameMatchesAction(object, action)) return object;
+static UIViewController *JCNewConnectivityViewController(id context, id *moduleOut) {
+    Class moduleClass = objc_getClass("CCUIConnectivityModule");
+    id module = JCAllocInit(moduleClass);
 
-    if ([object isKindOfClass:[UIViewController class]]) {
-        for (UIViewController *child in [(UIViewController *)object childViewControllers]) {
-            id found = JCFindMatchingObjectInIvars(child, action, depth + 1);
-            if (found) return found;
+    SEL setContext = NSSelectorFromString(@"setContentModuleContext:");
+    if (module && context && [module respondsToSelector:setContext]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(module, setContext, context);
+    }
+
+    UIViewController *controller = nil;
+
+    SEL controllerForContext = NSSelectorFromString(@"contentViewControllerForContext:");
+    if (module && [module respondsToSelector:controllerForContext]) {
+        controller = ((id (*)(id, SEL, id))objc_msgSend)(module,
+                                                          controllerForContext,
+                                                          context);
+    }
+
+    if (!controller) {
+        SEL contentViewController = NSSelectorFromString(@"contentViewController");
+        if (module && [module respondsToSelector:contentViewController]) {
+            controller = ((id (*)(id, SEL))objc_msgSend)(module, contentViewController);
         }
     }
 
-    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
+    if (!controller) {
+        Class controllerClass = objc_getClass("CCUIConnectivityModuleViewController");
+        if (controllerClass) {
+            id allocated = ((id (*)(id, SEL))objc_msgSend)((id)controllerClass, @selector(alloc));
+            SEL initWithContext = NSSelectorFromString(@"initWithContentModuleContext:");
+
+            if ([allocated respondsToSelector:initWithContext]) {
+                controller = ((id (*)(id, SEL, id))objc_msgSend)(allocated,
+                                                                  initWithContext,
+                                                                  context);
+            } else {
+                controller = ((id (*)(id, SEL))objc_msgSend)(allocated, @selector(init));
+
+                if (context && [controller respondsToSelector:setContext]) {
+                    ((void (*)(id, SEL, id))objc_msgSend)(controller,
+                                                          setContext,
+                                                          context);
+                }
+            }
+        }
+    }
+
+    if (moduleOut) *moduleOut = module;
+    return controller;
+}
+
+static id JCObjectForPossibleNames(id object, NSArray<NSString *> *names) {
+    for (NSString *name in names) {
+        id value = JCObjectForSelector(object, name);
+        if (value) return value;
+
+        value = JCObjectIvar(object, name.UTF8String);
+        if (value) return value;
+
+        NSString *underscored = [@"_" stringByAppendingString:name];
+        value = JCObjectIvar(object, underscored.UTF8String);
+        if (value) return value;
+    }
+
+    return nil;
+}
+
+static BOOL JCClassNameContains(id object, NSString *needle) {
+    if (!object) return NO;
+    return [NSStringFromClass([object class]).lowercaseString containsString:needle.lowercaseString];
+}
+
+static id JCFindChildController(UIViewController *parent, JCConnectivityAction action) {
+    NSArray<NSString *> *names = nil;
+    NSString *needle = nil;
+
+    switch (action) {
+        case JCConnectivityActionWiFi:
+            names = @[@"wifiButton", @"wifiButtonViewController",
+                      @"expandedWifiButtonViewController", @"wifiModuleViewController"];
+            needle = @"wifi";
+            break;
+
+        case JCConnectivityActionBluetooth:
+            names = @[@"bluetoothButton", @"bluetoothButtonViewController",
+                      @"expandedBluetoothButtonViewController", @"bluetoothModuleViewController"];
+            needle = @"bluetooth";
+            break;
+
+        case JCConnectivityActionAirDrop:
+            names = @[@"airDropButton", @"airDropButtonViewController",
+                      @"expandedAirDropButtonViewController", @"airDropModuleViewController"];
+            needle = @"airdrop";
+            break;
+
+        default:
+            return nil;
+    }
+
+    id known = JCObjectForPossibleNames(parent, names);
+    if (known) return known;
+
+    for (UIViewController *child in parent.childViewControllers) {
+        if (JCClassNameContains(child, needle)) {
+            return child;
+        }
+    }
+
+    for (Class cls = object_getClass(parent); cls; cls = class_getSuperclass(cls)) {
         unsigned int count = 0;
         Ivar *ivars = class_copyIvarList(cls, &count);
 
-        for (unsigned int i = 0; i < count; i++) {
-            const char *type = ivar_getTypeEncoding(ivars[i]);
+        for (unsigned int index = 0; index < count; index++) {
+            const char *type = ivar_getTypeEncoding(ivars[index]);
             if (!type || type[0] != '@') continue;
 
-            id value = object_getIvar(object, ivars[i]);
-            if (!value || value == object) continue;
-
-            if (JCClassNameMatchesAction(value, action)) {
+            id value = object_getIvar(parent, ivars[index]);
+            if (JCClassNameContains(value, needle)) {
                 free(ivars);
                 return value;
             }
@@ -251,121 +370,215 @@ static id JCFindMatchingObjectInIvars(id object, JCConnectivityAction action, NS
     return nil;
 }
 
-static id JCStockButtonController(JCConnectivityAction action) {
-    id controller = gStockConnectivityController;
-    if (!controller) return nil;
+static UIViewController *JCDetailControllerForAction(UIViewController *connectivityController,
+                                                     JCConnectivityAction action) {
+    id child = JCFindChildController(connectivityController, action);
+    if (!child) return nil;
 
-    NSArray<NSString *> *knownNames = nil;
-    switch (action) {
-        case JCConnectivityActionWiFi:
-            knownNames = @[@"wifiButton", @"wifiButtonViewController",
-                           @"expandedWifiButtonViewController", @"wifiModuleViewController"];
-            break;
-        case JCConnectivityActionBluetooth:
-            knownNames = @[@"bluetoothButton", @"bluetoothButtonViewController",
-                           @"expandedBluetoothButtonViewController", @"bluetoothModuleViewController"];
-            break;
-        case JCConnectivityActionAirDrop:
-            knownNames = @[@"airDropButton", @"airDropButtonViewController",
-                           @"expandedAirDropButtonViewController", @"airDropModuleViewController"];
-            break;
-        default:
-            return nil;
-    }
+    JCVoidBool(child, @"containerWillTransitionToExpandedContentMode:", YES);
 
-    for (NSString *name in knownNames) {
-        id value = JCObjectForSelector(controller, name);
-        if (value) return value;
+    SEL detailSelector =
+        NSSelectorFromString(@"presentedViewControllerForContentModuleDetailClickPresentationInteractionController:");
 
-        value = JCObjectIvar(controller, name.UTF8String);
-        if (value) return value;
-
-        NSString *underscored = [@"_" stringByAppendingString:name];
-        value = JCObjectIvar(controller, underscored.UTF8String);
-        if (value) return value;
-    }
-
-    return JCFindMatchingObjectInIvars(controller, action, 0);
-}
-
-static BOOL JCPresentStockDetail(JCConnectivityAction action) {
-    id buttonController = JCStockButtonController(action);
-    if (!buttonController) return NO;
-
-    id manager = JCObjectIvar(buttonController, "_clickPresentationInteractionManager");
-
-    if (!manager) {
-        SEL expandedSelector = NSSelectorFromString(@"containerWillTransitionToExpandedContentMode:");
-        if ([buttonController respondsToSelector:expandedSelector]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(buttonController, expandedSelector, YES);
+    if ([child respondsToSelector:detailSelector]) {
+        id detail = ((id (*)(id, SEL, id))objc_msgSend)(child, detailSelector, nil);
+        if ([detail isKindOfClass:[UIViewController class]]) {
+            return detail;
         }
-        manager = JCObjectIvar(buttonController, "_clickPresentationInteractionManager");
     }
 
-    if (!manager) return NO;
-
-    id interaction = JCObjectIvar(manager, "_clickPresentationInteraction");
-    SEL presentSelector = NSSelectorFromString(@"present");
-
-    if (interaction && [interaction respondsToSelector:presentSelector]) {
-        ((void (*)(id, SEL))objc_msgSend)(interaction, presentSelector);
-        return YES;
+    if (action == JCConnectivityActionAirDrop) {
+        SEL airDropSelector = NSSelectorFromString(@"_newAirDropMenuViewController");
+        if ([child respondsToSelector:airDropSelector]) {
+            id detail = ((id (*)(id, SEL))objc_msgSend)(child, airDropSelector);
+            if ([detail isKindOfClass:[UIViewController class]]) {
+                return detail;
+            }
+        }
     }
 
-    return NO;
+    return nil;
 }
 
-static void JCTryPendingDetail(NSUInteger attempt) {
-    JCConnectivityAction action = gPendingAction;
-    if (action == JCConnectivityActionNone) return;
+#pragma mark - Overlay host
 
-    id stock = gStockConnectivityController;
-    UIView *view = nil;
-    if (stock && [stock respondsToSelector:@selector(view)]) {
-        view = ((UIView *(*)(id, SEL))objc_msgSend)(stock, @selector(view));
+@interface JCConnectivityHostViewController : UIViewController
+@property (nonatomic, strong) UIView *panelView;
+@property (nonatomic, strong) UIView *contentView;
+@property (nonatomic, strong) UIViewController *connectivityController;
+@property (nonatomic, strong) UIViewController *detailController;
+@property (nonatomic, strong) id contentModuleContext;
+@property (nonatomic, strong) id connectivityModule;
+@property (nonatomic, assign) JCConnectivityAction action;
+- (void)showController:(UIViewController *)controller;
+@end
+
+@implementation JCConnectivityHostViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+
+    self.view.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.24];
+
+    UIVisualEffectView *panel =
+        [[UIVisualEffectView alloc] initWithEffect:
+            [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark]];
+
+    panel.translatesAutoresizingMaskIntoConstraints = NO;
+    panel.layer.cornerRadius = 28.0;
+    panel.layer.cornerCurve = kCACornerCurveContinuous;
+    panel.clipsToBounds = YES;
+
+    [self.view addSubview:panel];
+    self.panelView = panel;
+
+    UIView *content = panel.contentView;
+    self.contentView = content;
+
+    CGFloat width = MIN(UIScreen.mainScreen.bounds.size.width - 28.0, 390.0);
+    CGFloat height = MIN(MAX(UIScreen.mainScreen.bounds.size.height * 0.42, 320.0), 470.0);
+
+    [NSLayoutConstraint activateConstraints:@[
+        [panel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [panel.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor constant:10.0],
+        [panel.widthAnchor constraintEqualToConstant:width],
+        [panel.heightAnchor constraintEqualToConstant:height],
+    ]];
+
+    UITapGestureRecognizer *dismissTap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(outsideTap:)];
+
+    dismissTap.cancelsTouchesInView = NO;
+    [self.view addGestureRecognizer:dismissTap];
+}
+
+- (void)outsideTap:(UITapGestureRecognizer *)recognizer {
+    CGPoint point = [recognizer locationInView:self.view];
+
+    if (!CGRectContainsPoint(self.panelView.frame, point)) {
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }
+}
+
+- (void)showController:(UIViewController *)controller {
+    if (!controller || !self.contentView) return;
+
+    UIViewController *old = self.detailController ?: self.connectivityController;
+    if (old && old.parentViewController == self) {
+        [old willMoveToParentViewController:nil];
+        [old.view removeFromSuperview];
+        [old removeFromParentViewController];
     }
 
-    if (view.window && JCPresentStockDetail(action)) {
-        gPendingAction = JCConnectivityActionNone;
+    [self addChildViewController:controller];
+
+    UIView *view = controller.view;
+    view.translatesAutoresizingMaskIntoConstraints = NO;
+    view.backgroundColor = UIColor.clearColor;
+
+    [self.contentView addSubview:view];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [view.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+        [view.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+        [view.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+        [view.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+    ]];
+
+    [controller didMoveToParentViewController:self];
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+
+    JCVoidBool(self.connectivityController,
+               @"willTransitionToExpandedContentMode:",
+               NO);
+
+    id child = self.detailController;
+    JCVoidBool(child,
+               @"containerWillTransitionToExpandedContentMode:",
+               NO);
+}
+
+@end
+
+static __strong JCConnectivityHostViewController *gCurrentHost = nil;
+
+static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction action) {
+    if (gCurrentHost.presentingViewController) {
+        [gCurrentHost dismissViewControllerAnimated:NO completion:nil];
+        gCurrentHost = nil;
+    }
+
+    id context = JCNewContentModuleContext();
+    id module = nil;
+    UIViewController *connectivityController =
+        JCNewConnectivityViewController(context, &module);
+
+    if (!connectivityController) {
+        JCShowMessage(sourceView,
+                      @"JadeCompanion: Apple's Connectivity controller could not be created");
         return;
     }
 
-    if (attempt < 45) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            JCTryPendingDetail(attempt + 1);
-        });
-    } else {
-        gPendingAction = JCConnectivityActionNone;
+    (void)connectivityController.view;
+
+    JCVoidBool(connectivityController,
+               @"willTransitionToExpandedContentMode:",
+               YES);
+
+    UIViewController *presenter = JCPresenterForView(sourceView);
+    if (!presenter) {
+        JCShowMessage(sourceView,
+                      @"JadeCompanion: no presentation controller was available");
+        return;
     }
+
+    JCConnectivityHostViewController *host = [JCConnectivityHostViewController new];
+    host.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    host.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+    host.contentModuleContext = context;
+    host.connectivityModule = module;
+    host.connectivityController = connectivityController;
+    host.action = action;
+
+    gCurrentHost = host;
+
+    [presenter presentViewController:host animated:YES completion:^{
+        [host showController:connectivityController];
+
+        if (action == JCConnectivityActionWiFi ||
+            action == JCConnectivityActionBluetooth ||
+            action == JCConnectivityActionAirDrop) {
+
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                         (int64_t)(0.18 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                UIViewController *detail =
+                    JCDetailControllerForAction(connectivityController, action);
+
+                if (detail) {
+                    host.detailController = detail;
+
+                    SEL platter = NSSelectorFromString(@"setShouldProvideOwnPlatter:");
+                    if ([detail respondsToSelector:platter]) {
+                        ((void (*)(id, SEL, BOOL))objc_msgSend)(detail, platter, YES);
+                    }
+
+                    [host showController:detail];
+                } else {
+                    JCShowMessage(sourceView,
+                                  [NSString stringWithFormat:
+                                      @"JadeCompanion: %@ detail unavailable — showing stock Connectivity",
+                                      JCActionName(action)]);
+                }
+            });
+        }
+    }];
 }
 
-static BOOL JCOpenStockConnectivity(UIView *module, JCConnectivityAction action) {
-    UIViewController *card = JCFindJadeCard(module);
-    SEL expand = NSSelectorFromString(@"expandModuleWithIdentifier:");
-
-    if (!card || ![card respondsToSelector:expand]) {
-        return NO;
-    }
-
-    gPendingAction = (action == JCConnectivityActionWiFi ||
-                      action == JCConnectivityActionBluetooth ||
-                      action == JCConnectivityActionAirDrop)
-        ? action
-        : JCConnectivityActionNone;
-
-    ((void (*)(id, SEL, id))objc_msgSend)(card,
-                                          expand,
-                                          @"com.apple.control-center.ConnectivityModule");
-
-    if (gPendingAction != JCConnectivityActionNone) {
-        JCTryPendingDetail(0);
-    }
-
-    return YES;
-}
-
-#pragma mark - Exact Jade long-press hook
+#pragma mark - Jade's existing long press
 
 static void JCHookedFullWidthHandleLongPress(id self,
                                              SEL _cmd,
@@ -379,15 +592,15 @@ static void JCHookedFullWidthHandleLongPress(id self,
         return;
     }
 
-    // Do NOT call Jade's original handler for the connectivity module. Jade 1.0.5's
-    // own inherited long-press handler is what leaves its presentation/blur gesture
-    // state wedged after a hold. We reuse Jade's already-installed recognizer instead.
+    // Jade 1.0.5 already installs this recognizer. Its stock handler sets Jade's
+    // moduleExpanded/blur state and asks the stock CC collection to expand a
+    // Connectivity module that Jade has replaced. Suppress that path completely.
     if (recognizer.state != UIGestureRecognizerStateBegan) return;
 
-    UIView *module = [self isKindOfClass:[UIView class]] ? (UIView *)self : nil;
-    if (!module) return;
+    UIView *moduleView = [self isKindOfClass:[UIView class]] ? (UIView *)self : nil;
+    if (!moduleView) return;
 
-    CGPoint point = [recognizer locationInView:module];
+    CGPoint point = [recognizer locationInView:moduleView];
     JCConnectivityAction action = JCActionAtLocation(self, point);
     if (action == JCConnectivityActionNone) return;
 
@@ -396,76 +609,32 @@ static void JCHookedFullWidthHandleLongPress(id self,
     [feedback prepare];
     [feedback impactOccurred];
 
-    BOOL requested = JCOpenStockConnectivity(module, action);
-
-    // v0.5 test diagnostic: only show this if the stock connectivity view clearly
-    // failed to appear. This is deliberately visual because Jade itself already
-    // produces haptics, so haptic feedback cannot prove that JadeCompanion ran.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.75 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        id stock = gStockConnectivityController;
-        UIView *stockView = nil;
-        if (stock && [stock respondsToSelector:@selector(view)]) {
-            stockView = ((UIView *(*)(id, SEL))objc_msgSend)(stock, @selector(view));
-        }
-
-        if (!requested || !stockView.window) {
-            JCShowFailureToast(module, action);
-        }
-    });
-}
-
-static void JCHookedStockWillTransition(id self, SEL _cmd, BOOL expanded) {
-    if (gOrigStockWillTransition) {
-        gOrigStockWillTransition(self, _cmd, expanded);
-    }
-
-    if (expanded) {
-        gStockConnectivityController = self;
-        if (gPendingAction != JCConnectivityActionNone) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                JCTryPendingDetail(0);
-            });
-        }
-    } else if (gStockConnectivityController == self) {
-        gStockConnectivityController = nil;
-    }
+    JCPresentStockConnectivity(moduleView, action);
 }
 
 static void JCTryInstallHooks(NSUInteger attempt) {
-    JCLoadConnectivityBundle();
+    JCLoadControlCenterFrameworks();
 
     Class fullWidthClass = objc_getClass("JadeFullWidthModule");
     Class connectivityClass = objc_getClass("JadeConnectivityModule");
-    Class stockClass = objc_getClass("CCUIConnectivityModuleViewController");
+    SEL longPressSelector = NSSelectorFromString(@"handleLongPress:");
 
-    if (!gHooksInstalled && fullWidthClass && connectivityClass) {
-        SEL longPressSelector = NSSelectorFromString(@"handleLongPress:");
-        Method longPressMethod = class_getInstanceMethod(fullWidthClass, longPressSelector);
+    if (!gHooksInstalled &&
+        fullWidthClass &&
+        connectivityClass &&
+        class_getInstanceMethod(fullWidthClass, longPressSelector)) {
 
-        if (longPressMethod) {
-            MSHookMessageEx(fullWidthClass,
-                            longPressSelector,
-                            (IMP)JCHookedFullWidthHandleLongPress,
-                            (IMP *)&gOrigFullWidthHandleLongPress);
+        MSHookMessageEx(fullWidthClass,
+                        longPressSelector,
+                        (IMP)JCHookedFullWidthHandleLongPress,
+                        (IMP *)&gOrigFullWidthHandleLongPress);
 
-            gHooksInstalled = YES;
-        }
+        gHooksInstalled = YES;
     }
 
-    if (!gOrigStockWillTransition && stockClass) {
-        SEL transition = NSSelectorFromString(@"willTransitionToExpandedContentMode:");
-        if (class_getInstanceMethod(stockClass, transition)) {
-            MSHookMessageEx(stockClass,
-                            transition,
-                            (IMP)JCHookedStockWillTransition,
-                            (IMP *)&gOrigStockWillTransition);
-        }
-    }
-
-    if ((!gHooksInstalled || !gOrigStockWillTransition) && attempt < 80) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+    if (!gHooksInstalled && attempt < 80) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.25 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             JCTryInstallHooks(attempt + 1);
         });
