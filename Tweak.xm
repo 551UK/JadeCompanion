@@ -463,29 +463,56 @@ static UIViewController *JCDetailControllerForAction(UIViewController *connectiv
 - (void)showController:(UIViewController *)controller {
     if (!controller || !self.contentView) return;
 
-    UIViewController *old = self.detailController ?: self.connectivityController;
+    UIViewController *old = nil;
+    for (UIViewController *child in self.childViewControllers) {
+        if (child != controller) {
+            old = child;
+            break;
+        }
+    }
+
+    BOOL hostVisible = self.view.window != nil;
+
     if (old && old.parentViewController == self) {
+        if (hostVisible) {
+            [old beginAppearanceTransition:NO animated:NO];
+        }
+
         [old willMoveToParentViewController:nil];
         [old.view removeFromSuperview];
         [old removeFromParentViewController];
+
+        if (hostVisible) {
+            [old endAppearanceTransition];
+        }
     }
 
-    [self addChildViewController:controller];
+    if (controller.parentViewController != self) {
+        if (hostVisible) {
+            [controller beginAppearanceTransition:YES animated:NO];
+        }
 
-    UIView *view = controller.view;
-    view.translatesAutoresizingMaskIntoConstraints = NO;
-    view.backgroundColor = UIColor.clearColor;
+        [self addChildViewController:controller];
 
-    [self.contentView addSubview:view];
+        UIView *view = controller.view;
+        view.translatesAutoresizingMaskIntoConstraints = NO;
+        view.backgroundColor = UIColor.clearColor;
 
-    [NSLayoutConstraint activateConstraints:@[
-        [view.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
-        [view.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
-        [view.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
-        [view.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
-    ]];
+        [self.contentView addSubview:view];
 
-    [controller didMoveToParentViewController:self];
+        [NSLayoutConstraint activateConstraints:@[
+            [view.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+            [view.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+            [view.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+            [view.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor],
+        ]];
+
+        [controller didMoveToParentViewController:self];
+
+        if (hostVisible) {
+            [controller endAppearanceTransition];
+        }
+    }
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -566,6 +593,11 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
                         ((void (*)(id, SEL, BOOL))objc_msgSend)(detail, platter, YES);
                     }
 
+                    // These Apple detail controllers normally receive a complete
+                    // Control Center appearance lifecycle. Our host swaps them in
+                    // after presentation, so explicitly drive that lifecycle in
+                    // showController:. Bluetooth in particular refreshes its device
+                    // list from viewWillAppear:.
                     [host showController:detail];
                 } else {
                     JCShowMessage(sourceView,
