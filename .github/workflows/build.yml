@@ -32,34 +32,27 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: JadeCompanion-rootless-v0.6.0
+          name: JadeCompanion-rootless-v0.6.1
           path: packages/*.deb
           if-no-files-found: error
 
       - name: Publish GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          tag: v0.6.0
-          name: JadeCompanion v0.6.0
+          tag: v0.6.1
+          name: JadeCompanion v0.6.1
           prerelease: true
           body: |
-            Sixth test build for Jade 1.0.5.
+            Polished test build after v0.6 successfully opened Apple's Wi-Fi and Bluetooth detail views.
 
-            Root cause found in Jade itself:
-            - JadeConnectivityModule already inherits JadeFullWidthModule's built-in long-press recognizer.
-            - JadeConnectivityModule sets its internal module identifier to com.apple.control-center.ConnectivityModule.
-            - Jade's long-press path sets its own moduleExpanded/blur state, then calls moduleViewForIdentifier: and expandModuleWithIdentifier: on Apple's stock Control Center collection.
-            - That path fails for the replaced Connectivity module, leaving Jade blurred with no expanded UI.
-            - This explains why Focus, Screen Recording and other original modules expand correctly while Jade's custom connectivity row does not.
-
-            v0.6 changes the architecture:
-            - Does not call JadeCardViewController expandModuleWithIdentifier: for connectivity at all.
-            - Reuses Jade's existing long-press recognizer only for touch detection.
-            - Creates Apple's real CCUIContentModuleContext and CCUIConnectivityModule / CCUIConnectivityModuleViewController.
-            - Presents that stock controller in its own overlay so Jade's moduleExpanded/blur state is never wedged.
-            - Wi-Fi, Bluetooth and AirDrop then attempt their real stock second-level detail controllers.
-            - Airplane Mode and Cellular Data show the real expanded stock Connectivity controller.
-            - Normal Jade taps are unchanged.
+            Changes:
+            - Keeps the working v0.6 architecture that bypasses Jade's broken Connectivity expansion path.
+            - Explicitly forwards appearance transitions when swapping Apple's stock detail controllers into the companion host.
+            - This is especially important for Bluetooth, whose stock menu refreshes its device list from viewWillAppear:.
+            - Wi-Fi, Bluetooth and AirDrop continue to use Apple's real stock detail controllers.
+            - Airplane Mode and Cellular Data continue to show the real expanded stock Connectivity controller.
+            - Jade's original connectivity long-press path remains suppressed, avoiding the blur-only stuck state.
+            - Normal Jade taps remain unchanged.
 
             Primary target: Jade 1.0.5 on iOS 16 + Dopamine rootless.
           artifacts: packages/*.deb
