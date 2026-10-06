@@ -2,7 +2,7 @@
 
 JadeCompanion fixes the broken hold / Haptic Touch behaviour on Jade's connectivity buttons on iOS 16.
 
-Without this tweak, holding Wi-Fi, Bluetooth, AirDrop, Airplane Mode or Cellular Data can do nothing.... After doing that action without my tweak, Jade can also get stuck so the next time you try to open it, the screen only blurs and the Jade interface does not slide up.
+Without this tweak, holding Wi-Fi, Bluetooth, AirDrop, Airplane Mode or Cellular Data do nothing.... Also after attempting that action without my tweak, Jade can also get stuck so the next time you try to open it, the screen only blurs and the Jade interface does not slide up.
 
 JadeCompanion fixes both problems.
 
