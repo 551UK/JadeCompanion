@@ -45,16 +45,16 @@ jobs:
           body: |
             Third test build focused on making the long press attach reliably to Jade 1.0.5.
 
-Changes:
-- Hooks JadeCardViewController and JadeConnectivityModule directly.
-- Adds one long-press recognizer to the whole Jade connectivity module, so it no longer depends on JadeConnectivityButton being re-created after SpringBoard starts.
-- Determines Wi-Fi, Bluetooth, Airplane Mode, Cellular and AirDrop by the real Jade button ivars and touch location.
-- Resets Jade's conflicting pan/hold recognizers only after a real long press begins, targeting Jade's pre-existing "hold, then next swipe only blurs" bug.
-- Uses Jade's own expandModuleWithIdentifier: method to open Apple's real Connectivity module.
-- Wi-Fi, Bluetooth and AirDrop then attempt the stock second-level detail interaction.
-- Normal Jade taps remain unchanged.
+            Changes:
+            - Hooks JadeCardViewController and JadeConnectivityModule directly.
+            - Adds one long-press recognizer to the whole Jade connectivity module, so it no longer depends on JadeConnectivityButton being re-created after SpringBoard starts.
+            - Determines Wi-Fi, Bluetooth, Airplane Mode, Cellular and AirDrop by the real Jade button ivars and touch location.
+            - Resets Jade's conflicting pan/hold recognizers only after a real long press begins, targeting Jade's pre-existing "hold, then next swipe only blurs" bug.
+            - Uses Jade's own expandModuleWithIdentifier: method to open Apple's real Connectivity module.
+            - Wi-Fi, Bluetooth and AirDrop then attempt the stock second-level detail interaction.
+            - Normal Jade taps remain unchanged.
 
-Primary target: Jade 1.0.5 on iOS 16 + Dopamine rootless.
+            Primary target: Jade 1.0.5 on iOS 16 + Dopamine rootless.
           artifacts: packages/*.deb
           artifactErrorsFailBuild: true
           allowUpdates: true
