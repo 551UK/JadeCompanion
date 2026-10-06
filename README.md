@@ -44,16 +44,3 @@ In simple terms:
 
 Because Jade is no longer left stuck in its broken expanded state, the old **blur-only bug is fixed too**.
 
-## Are the menus real?
-
-## Compatibility
-
-- **iOS 16**
-- **Rootless jailbreaks**, including Dopamine
-- Jade installed
-
-## Removing JadeCompanion
-
-Jade itself is not permanently modified.
-
-If you uninstall JadeCompanion and respring, Jade goes back to its original behaviour.
