@@ -62,3 +62,8 @@ v0.6.7 is rebuilt from the last known-loading v0.6.5 source. The v0.6.6 global A
 The only changes over v0.6.5 are:
 - native platter cleanup is delayed until after Apple's close animation;
 - the stock expanded Airplane controller is asked to observe and refresh its real radio state when the platter opens.
+
+
+## v0.6.12 dismissal lifecycle fix
+
+Keeps the working v0.6.11 native Connectivity platter, Airplane Mode behaviour and Apple's normal outside-tap dismissal path. It removes four manual beginAppearanceTransition:/endAppearanceTransition calls that JadeCompanion was incorrectly sending to the expanded container while Apple's click-presentation interaction was already driving that lifecycle. Stock CCUIModuleCollectionViewController changes sibling-module appearance instead of re-entering the expanded container's own appearance transition.

@@ -682,8 +682,8 @@ static UIViewController *JCOwningViewController(UIView *view) {
 
 - (void)contentModuleContainerViewController:(id)controller
                   willOpenExpandedModule:(id)module {
-    [self.containerViewController beginAppearanceTransition:YES animated:NO];
-    [self.containerViewController endAppearanceTransition];
+    // Stock Control Center lets the private click-presentation interaction
+    // own the expanded container's appearance transition.
 }
 
 - (void)contentModuleContainerViewController:(id)controller
@@ -713,12 +713,9 @@ static UIViewController *JCOwningViewController(UIView *view) {
 
 - (void)contentModuleContainerViewController:(id)controller
                  willCloseExpandedModule:(id)module {
-    // Restore Jade before Apple's collapse animation starts so the native
-    // platter has a real compact target to animate back toward.
+    // Restore Jade before Apple's stock collapse animation starts. Do not
+    // manually drive the expanded container's appearance lifecycle here.
     [self restoreJadeBehindNativePlatter];
-
-    [self.containerViewController beginAppearanceTransition:NO animated:NO];
-    [self.containerViewController endAppearanceTransition];
 }
 
 - (void)contentModuleContainerViewController:(id)controller
@@ -737,14 +734,13 @@ static UIViewController *JCOwningViewController(UIView *view) {
 
 - (void)contentModuleContainerViewController:(id)controller
                    willPresentViewController:(UIViewController *)viewController {
-    [self.containerViewController beginAppearanceTransition:YES animated:YES];
-    [self.containerViewController endAppearanceTransition];
+    // Stock collection controller adjusts sibling modules here, not this
+    // container. JadeCompanion has no sibling stock modules to update.
 }
 
 - (void)contentModuleContainerViewController:(id)controller
                    willDismissViewController:(UIViewController *)viewController {
-    [self.containerViewController beginAppearanceTransition:NO animated:YES];
-    [self.containerViewController endAppearanceTransition];
+    // UIKit/ControlCenterUI already owns this presentation transition.
 }
 
 - (void)contentModuleContainerViewControllerDismissPresentedContent:(id)controller {
