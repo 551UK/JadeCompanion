@@ -400,6 +400,385 @@ static UIViewController *JCDetailControllerForAction(UIViewController *connectiv
     return nil;
 }
 
+#pragma mark - Native Control Center platter
+
+typedef struct {
+    NSUInteger width;
+    NSUInteger height;
+} JCModuleLayoutSize;
+
+@class JCNativeConnectivitySession;
+static __strong JCNativeConnectivitySession *gNativeConnectivitySession = nil;
+
+static UIViewController *JCOwningViewController(UIView *view) {
+    UIResponder *responder = view;
+    while (responder) {
+        if ([responder isKindOfClass:[UIViewController class]]) {
+            return (UIViewController *)responder;
+        }
+        responder = responder.nextResponder;
+    }
+    return nil;
+}
+
+@interface JCNativeConnectivitySession : NSObject
+@property (nonatomic, weak) UIView *sourceView;
+@property (nonatomic, weak) UIViewController *parentViewController;
+@property (nonatomic, strong) UIViewController *containerViewController;
+@property (nonatomic, strong) UIView *moduleContainerView;
+@property (nonatomic, strong) id connectivityModule;
+@property (nonatomic, strong) id contentModuleContext;
+@property (nonatomic, strong) id presentationContext;
+- (BOOL)installForSourceView:(UIView *)sourceView;
+- (void)expandWhenReady:(NSUInteger)attempt;
+- (void)cleanup;
+@end
+
+@implementation JCNativeConnectivitySession
+
+- (BOOL)installForSourceView:(UIView *)sourceView {
+    UIViewController *parent = JCOwningViewController(sourceView);
+    if (!parent || !parent.view || !sourceView.window) return NO;
+
+    Class contextClass = objc_getClass("CCUIContentModuleContext");
+    Class moduleClass = objc_getClass("CCUIConnectivityModule");
+    Class presentationContextClass = objc_getClass("CCUIContentModulePresentationContext");
+    Class containerClass = objc_getClass("CCUIContentModuleContainerViewController");
+    Class wrapperClass = objc_getClass("CCUIContentModuleContainerView");
+
+    if (!contextClass || !moduleClass || !presentationContextClass || !containerClass) {
+        return NO;
+    }
+
+    id contextAlloc = ((id (*)(id, SEL))objc_msgSend)((id)contextClass, @selector(alloc));
+    SEL contextInit = NSSelectorFromString(@"initWithModuleIdentifier:");
+    id context = nil;
+    if ([contextAlloc respondsToSelector:contextInit]) {
+        context = ((id (*)(id, SEL, id))objc_msgSend)(contextAlloc,
+                                                       contextInit,
+                                                       JCConnectivityIdentifier);
+    }
+    if (!context) return NO;
+
+    SEL setDelegate = NSSelectorFromString(@"setDelegate:");
+    if ([context respondsToSelector:setDelegate]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(context, setDelegate, self);
+    }
+
+    id module = JCAllocInit(moduleClass);
+    if (!module) return NO;
+
+    SEL setModuleContext = NSSelectorFromString(@"setContentModuleContext:");
+    if ([module respondsToSelector:setModuleContext]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(module, setModuleContext, context);
+    }
+
+    SEL defaultContext = NSSelectorFromString(@"defaultControlCenterPresentationContext");
+    id presentationContext = nil;
+    if ([presentationContextClass respondsToSelector:defaultContext]) {
+        presentationContext =
+            ((id (*)(id, SEL))objc_msgSend)((id)presentationContextClass, defaultContext);
+    }
+    if (!presentationContext) return NO;
+
+    id containerAlloc =
+        ((id (*)(id, SEL))objc_msgSend)((id)containerClass, @selector(alloc));
+    id container = nil;
+
+    SEL classicInit =
+        NSSelectorFromString(@"initWithModuleIdentifier:contentModule:presentationContext:");
+    SEL uniqueInit =
+        NSSelectorFromString(@"initWithModuleIdentifier:uniqueIdentifier:contentModule:presentationContext:");
+
+    if ([containerAlloc respondsToSelector:classicInit]) {
+        container =
+            ((id (*)(id, SEL, id, id, id))objc_msgSend)(containerAlloc,
+                                                         classicInit,
+                                                         JCConnectivityIdentifier,
+                                                         module,
+                                                         presentationContext);
+    } else if ([containerAlloc respondsToSelector:uniqueInit]) {
+        container =
+            ((id (*)(id, SEL, id, id, id, id))objc_msgSend)(containerAlloc,
+                                                             uniqueInit,
+                                                             JCConnectivityIdentifier,
+                                                             [NSUUID UUID],
+                                                             module,
+                                                             presentationContext);
+    }
+    if (![container isKindOfClass:[UIViewController class]]) return NO;
+
+    SEL setContainerDelegate = NSSelectorFromString(@"setDelegate:");
+    if ([container respondsToSelector:setContainerDelegate]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(container, setContainerDelegate, self);
+    }
+
+    SEL setMaterialGroupName = NSSelectorFromString(@"setMaterialGroupName:");
+    if ([container respondsToSelector:setMaterialGroupName]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(container,
+                                              setMaterialGroupName,
+                                              @"CCUIContentModuleContainerViewControllerGroupName");
+    }
+
+    UIView *wrapper = nil;
+    SEL wrapperInit = NSSelectorFromString(@"initWithModuleIdentifier:options:");
+    if (wrapperClass &&
+        [wrapperClass instancesRespondToSelector:wrapperInit]) {
+        id wrapperAlloc =
+            ((id (*)(id, SEL))objc_msgSend)((id)wrapperClass, @selector(alloc));
+        wrapper =
+            ((id (*)(id, SEL, id, NSUInteger))objc_msgSend)(wrapperAlloc,
+                                                             wrapperInit,
+                                                             JCConnectivityIdentifier,
+                                                             3);
+    }
+    if (!wrapper) wrapper = [UIView new];
+
+    CGRect frame = [sourceView.superview convertRect:sourceView.frame toView:parent.view];
+    if (CGRectIsEmpty(frame) || CGRectIsNull(frame) || CGRectIsInfinite(frame)) {
+        frame = [sourceView convertRect:sourceView.bounds toView:parent.view];
+    }
+    wrapper.frame = frame;
+    wrapper.userInteractionEnabled = NO;
+    wrapper.accessibilityElementsHidden = YES;
+
+    [parent addChildViewController:container];
+
+    UIView *contentHost = wrapper;
+    SEL containerViewSelector = NSSelectorFromString(@"containerView");
+    if ([wrapper respondsToSelector:containerViewSelector]) {
+        id candidate =
+            ((id (*)(id, SEL))objc_msgSend)(wrapper, containerViewSelector);
+        if ([candidate isKindOfClass:[UIView class]]) {
+            contentHost = candidate;
+        }
+    }
+
+    UIView *containerView = ((UIViewController *)container).view;
+    containerView.frame = contentHost.bounds;
+    containerView.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [contentHost addSubview:containerView];
+
+    // Keep the real compact Control Center module in the same window, but behind
+    // Jade. Apple's own click-presentation controller can then perform the exact
+    // native Haptic Touch expansion without JadeCompanion drawing a fake platter.
+    [parent.view insertSubview:wrapper atIndex:0];
+
+    [container didMoveToParentViewController:parent];
+    [wrapper setNeedsLayout];
+    [wrapper layoutIfNeeded];
+    [containerView setNeedsLayout];
+    [containerView layoutIfNeeded];
+
+    [container beginAppearanceTransition:YES animated:NO];
+    [container endAppearanceTransition];
+
+    SEL willBecomeActive = NSSelectorFromString(@"willBecomeActive");
+    if ([container respondsToSelector:willBecomeActive]) {
+        ((void (*)(id, SEL))objc_msgSend)(container, willBecomeActive);
+    }
+
+    self.sourceView = sourceView;
+    self.parentViewController = parent;
+    self.containerViewController = container;
+    self.moduleContainerView = wrapper;
+    self.connectivityModule = module;
+    self.contentModuleContext = context;
+    self.presentationContext = presentationContext;
+
+    [self expandWhenReady:0];
+    return YES;
+}
+
+- (void)expandWhenReady:(NSUInteger)attempt {
+    UIViewController *container = self.containerViewController;
+    if (!container) return;
+
+    if (container.view.window) {
+        SEL expand = NSSelectorFromString(@"expandModule");
+        if ([container respondsToSelector:expand]) {
+            ((void (*)(id, SEL))objc_msgSend)(container, expand);
+            return;
+        }
+        [self cleanup];
+        return;
+    }
+
+    if (attempt >= 20) {
+        [self cleanup];
+        return;
+    }
+
+    __weak JCNativeConnectivitySession *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.03 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [weakSelf expandWhenReady:attempt + 1];
+    });
+}
+
+- (CGRect)compactModeFrameForContentModuleContainerViewController:(id)controller {
+    UIView *source = self.sourceView;
+    if (!source) return self.moduleContainerView.frame;
+
+    UIView *targetView = self.parentViewController.view;
+    SEL definingSelector = NSSelectorFromString(@"bs_presentationContextDefiningViewController");
+    if ([controller respondsToSelector:definingSelector]) {
+        id defining = ((id (*)(id, SEL))objc_msgSend)(controller, definingSelector);
+        if ([defining isKindOfClass:[UIViewController class]] &&
+            ((UIViewController *)defining).view) {
+            targetView = ((UIViewController *)defining).view;
+        }
+    }
+
+    return [source convertRect:source.bounds toView:targetView];
+}
+
+- (BOOL)contentModuleContainerViewController:(id)controller
+               canBeginInteractionWithModule:(id)module {
+    return YES;
+}
+
+- (void)contentModuleContainerViewController:(id)controller
+               didBeginInteractionWithModule:(id)module {
+    SEL ignore = NSSelectorFromString(@"setIgnoreFrameUpdates:");
+    if ([self.moduleContainerView respondsToSelector:ignore]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(self.moduleContainerView, ignore, YES);
+    }
+}
+
+- (void)contentModuleContainerViewController:(id)controller
+              didFinishInteractionWithModule:(id)module {
+    SEL ignore = NSSelectorFromString(@"setIgnoreFrameUpdates:");
+    if ([self.moduleContainerView respondsToSelector:ignore]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(self.moduleContainerView, ignore, NO);
+    }
+}
+
+- (void)contentModuleContainerViewController:(id)controller
+                  willOpenExpandedModule:(id)module {
+    [self.containerViewController beginAppearanceTransition:YES animated:NO];
+    [self.containerViewController endAppearanceTransition];
+}
+
+- (void)contentModuleContainerViewController:(id)controller
+                   didOpenExpandedModule:(id)module {
+}
+
+- (void)contentModuleContainerViewController:(id)controller
+                 willCloseExpandedModule:(id)module {
+    [self.containerViewController beginAppearanceTransition:NO animated:NO];
+    [self.containerViewController endAppearanceTransition];
+}
+
+- (void)contentModuleContainerViewController:(id)controller
+                  didCloseExpandedModule:(id)module {
+    __weak JCNativeConnectivitySession *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf cleanup];
+    });
+}
+
+- (void)contentModuleContainerViewController:(id)controller
+                   willPresentViewController:(UIViewController *)viewController {
+    [self.containerViewController beginAppearanceTransition:YES animated:YES];
+    [self.containerViewController endAppearanceTransition];
+}
+
+- (void)contentModuleContainerViewController:(id)controller
+                   willDismissViewController:(UIViewController *)viewController {
+    [self.containerViewController beginAppearanceTransition:NO animated:YES];
+    [self.containerViewController endAppearanceTransition];
+}
+
+- (void)contentModuleContainerViewControllerDismissPresentedContent:(id)controller {
+    SEL dismiss = NSSelectorFromString(@"dismissPresentedContentAnimated:");
+    if ([controller respondsToSelector:dismiss]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(controller, dismiss, YES);
+    }
+}
+
+- (void)contentModuleContext:(id)context enqueueStatusUpdate:(id)status {
+}
+
+- (void)requestExpandModuleForContentModuleContext:(id)context {
+    [self expandWhenReady:0];
+}
+
+- (void)dismissExpandedViewForContentModuleContext:(id)context {
+    SEL dismiss = NSSelectorFromString(@"dismissPresentedContentAnimated:");
+    if ([self.containerViewController respondsToSelector:dismiss]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(self.containerViewController,
+                                                dismiss,
+                                                YES);
+    }
+}
+
+- (void)dismissControlCenterForContentModuleContext:(id)context {
+    [self dismissExpandedViewForContentModuleContext:context];
+}
+
+- (void)requestModuleLayoutSizeUpdateForContentModuleContext:(id)context {
+}
+
+- (JCModuleLayoutSize)moduleLayoutSizeForContentModuleContext:(id)context
+                                              forOrientation:(NSInteger)orientation {
+    JCModuleLayoutSize size = {2, 2};
+    return size;
+}
+
+- (void)cleanup {
+    UIViewController *container = self.containerViewController;
+    if (container) {
+        SEL willResignActive = NSSelectorFromString(@"willResignActive");
+        if ([container respondsToSelector:willResignActive]) {
+            ((void (*)(id, SEL))objc_msgSend)(container, willResignActive);
+        }
+
+        [container willMoveToParentViewController:nil];
+        [container.view removeFromSuperview];
+        [container removeFromParentViewController];
+
+        SEL setDelegate = NSSelectorFromString(@"setDelegate:");
+        if ([container respondsToSelector:setDelegate]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(container, setDelegate, nil);
+        }
+    }
+
+    [self.moduleContainerView removeFromSuperview];
+
+    self.containerViewController = nil;
+    self.moduleContainerView = nil;
+    self.connectivityModule = nil;
+    self.contentModuleContext = nil;
+    self.presentationContext = nil;
+
+    if (gNativeConnectivitySession == self) {
+        gNativeConnectivitySession = nil;
+    }
+}
+
+@end
+
+static BOOL JCPresentNativeConnectivityPlatter(UIView *sourceView) {
+    if (!sourceView) return NO;
+
+    if (gNativeConnectivitySession) {
+        [gNativeConnectivitySession cleanup];
+    }
+
+    JCNativeConnectivitySession *session = [JCNativeConnectivitySession new];
+    gNativeConnectivitySession = session;
+
+    if (![session installForSourceView:sourceView]) {
+        [session cleanup];
+        return NO;
+    }
+
+    return YES;
+}
+
 #pragma mark - Overlay host
 
 @interface JCConnectivityHostViewController : UIViewController
@@ -657,7 +1036,17 @@ static void JCHookedFullWidthHandleLongPress(id self,
     [feedback prepare];
     [feedback impactOccurred];
 
-    JCPresentStockConnectivity(moduleView, action);
+    // Wi-Fi, Cellular Data, Airplane Mode and Bluetooth all use Apple's
+    // own CCUIContentModuleContainerViewController expansion. This is the same
+    // native Haptic Touch / 3D Touch presentation path used by Control Center.
+    // AirDrop is intentionally left on the existing dedicated menu path.
+    if (action == JCConnectivityActionAirDrop) {
+        JCPresentStockConnectivity(moduleView, action);
+    } else {
+        if (!JCPresentNativeConnectivityPlatter(moduleView)) {
+            NSLog(@"[JadeCompanion] Native Connectivity platter could not be started");
+        }
+    }
 }
 
 static void JCTryInstallHooks(NSUInteger attempt) {

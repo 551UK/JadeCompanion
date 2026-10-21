@@ -10,11 +10,11 @@ JadeCompanion fixes both problems.
 
 When you hold one of Jade's connectivity buttons, JadeCompanion opens the proper connectivity menu instead of letting Jade use the broken hold behaviour.
 
-1. **Wi-Fi:** hold for Apple's expanded stock connectivity panel.
-2. **Bluetooth:** hold for Apple's Bluetooth device menu.
-3. **AirDrop:** hold for Apple's AirDrop menu.
-4. **Airplane Mode:** hold for Apple's expanded connectivity panel.
-5. **Cellular Data:** hold for Apple's expanded connectivity panel.
+1. **Wi-Fi:** hold for Apple's native expanded Connectivity platter.
+2. **Bluetooth:** hold for the same native expanded Connectivity platter.
+3. **AirDrop:** keeps its existing dedicated AirDrop menu path.
+4. **Airplane Mode:** hold for Apple's native expanded Connectivity platter.
+5. **Cellular Data:** hold for Apple's native expanded Connectivity platter.
 6. **Normal taps remain handled by Jade exactly as before.**
 7. **A hold only opens the menu:** it does not turn the button on or off, including when you release your finger.
 
@@ -37,7 +37,7 @@ This caused two problems:
 
 JadeCompanion catches the connectivity hold before Jade goes down the broken path.
 
-Instead of letting Jade get stuck trying to open the menu, JadeCompanion opens Apple's real Control Center connectivity views directly.
+Instead of drawing its own replacement window, JadeCompanion now uses Apple's own `CCUIContentModuleContainerViewController` Haptic Touch presentation path for Wi-Fi, Bluetooth, Airplane Mode and Cellular Data.
 
 In simple terms:
 

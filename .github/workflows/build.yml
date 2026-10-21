@@ -39,14 +39,14 @@ jobs:
       - name: Publish GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          tag: v0.6.3
-          name: JadeCompanion v0.6.3
+          tag: v0.6.4
+          name: JadeCompanion v0.6.4
           prerelease: false
           draft: false
           body: |
             Fixes Jade's broken connectivity hold menus on iOS 16.
 
-            Hold Wi-Fi, Cellular Data or Airplane Mode to open Apple's expanded stock connectivity panel. Bluetooth and AirDrop keep their native detail menus.
+            Hold Wi-Fi, Bluetooth, Cellular Data or Airplane Mode to open Apple's native expanded Connectivity platter using the stock Control Center Haptic Touch presentation path. AirDrop keeps its existing dedicated menu path.
 
             Normal taps still toggle through Jade. Holding a button opens its menu without toggling it, and the old blur-only bug remains fixed.
           artifacts: packages/*.deb
@@ -55,12 +55,12 @@ jobs:
           replacesArtifacts: true
           makeLatest: true
 
-      - name: Remove superseded v0.6.2 release
+      - name: Remove superseded v0.6.3 release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Only remove the previous release after v0.6.3 has been published.
-          gh release view v0.6.3
-          if gh release view v0.6.2 >/dev/null 2>&1; then
-            gh release delete v0.6.2 --cleanup-tag --yes
+          # Only remove the previous release after v0.6.4 has been published.
+          gh release view v0.6.4
+          if gh release view v0.6.3 >/dev/null 2>&1; then
+            gh release delete v0.6.3 --cleanup-tag --yes
           fi
