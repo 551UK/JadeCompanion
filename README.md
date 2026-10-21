@@ -62,3 +62,11 @@ v0.6.7 is rebuilt from the last known-loading v0.6.5 source. The v0.6.6 global A
 The only changes over v0.6.5 are:
 - native platter cleanup is delayed until after Apple's close animation;
 - the stock expanded Airplane controller is asked to observe and refresh its real radio state when the platter opens.
+
+
+## v0.6.8 dismissal fix
+
+- Airplane Mode behaviour is unchanged from v0.6.7.
+- Tapping outside the native Connectivity platter no longer calls `dismissPresentedContentAnimated:`.
+- The outside-tap delegate now closes the expanded module through Apple's dedicated `dismissExpandedModuleAnimated:` path, with a re-entry guard to prevent duplicate close requests.
+- The existing delayed cleanup remains in place so JadeCompanion does not detach the embedded stock module during Apple's close animation.

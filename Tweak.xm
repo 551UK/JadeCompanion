@@ -438,6 +438,7 @@ static UIViewController *JCOwningViewController(UIView *view) {
 @property (nonatomic, strong) NSArray<UIView *> *jadeViewsToHide;
 @property (nonatomic, strong) NSArray<NSNumber *> *jadeViewsOriginalHidden;
 @property (nonatomic, assign) BOOL jadeViewsHidden;
+@property (nonatomic, assign) BOOL dismissalRequested;
 - (BOOL)installForSourceView:(UIView *)sourceView;
 - (void)expandWhenReady:(NSUInteger)attempt;
 - (void)hideJadeBehindNativePlatter;
@@ -748,9 +749,26 @@ static UIViewController *JCOwningViewController(UIView *view) {
 }
 
 - (void)contentModuleContainerViewControllerDismissPresentedContent:(id)controller {
-    SEL dismiss = NSSelectorFromString(@"dismissPresentedContentAnimated:");
-    if ([controller respondsToSelector:dismiss]) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(controller, dismiss, YES);
+    // This delegate callback is Apple's outside-tap path. Because our stock
+    // Connectivity container is embedded inside Jade rather than the real
+    // Control Center collection controller, dismissPresentedContentAnimated:
+    // can tear down the click-presentation object incorrectly and crash
+    // SpringBoard. Close the expanded module itself instead.
+    if (self.dismissalRequested) return;
+    self.dismissalRequested = YES;
+
+    SEL dismissExpanded = NSSelectorFromString(@"dismissExpandedModuleAnimated:");
+    if ([controller respondsToSelector:dismissExpanded]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(controller,
+                                                dismissExpanded,
+                                                YES);
+        return;
+    }
+
+    // Older fallback: collapse the module directly if that selector exists.
+    SEL transition = NSSelectorFromString(@"transitionToExpandedMode:");
+    if ([controller respondsToSelector:transition]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(controller, transition, NO);
     }
 }
 
@@ -762,12 +780,8 @@ static UIViewController *JCOwningViewController(UIView *view) {
 }
 
 - (void)dismissExpandedViewForContentModuleContext:(id)context {
-    SEL dismiss = NSSelectorFromString(@"dismissPresentedContentAnimated:");
-    if ([self.containerViewController respondsToSelector:dismiss]) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(self.containerViewController,
-                                                dismiss,
-                                                YES);
-    }
+    [self contentModuleContainerViewControllerDismissPresentedContent:
+        self.containerViewController];
 }
 
 - (void)dismissControlCenterForContentModuleContext:(id)context {
@@ -843,6 +857,7 @@ static UIViewController *JCOwningViewController(UIView *view) {
     self.presentationContext = nil;
     self.jadeViewsToHide = nil;
     self.jadeViewsOriginalHidden = nil;
+    self.dismissalRequested = NO;
 
     if (gNativeConnectivitySession == self) {
         gNativeConnectivitySession = nil;
