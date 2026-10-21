@@ -54,3 +54,13 @@ jobs:
           allowUpdates: true
           replacesArtifacts: true
           makeLatest: true
+
+      - name: Remove superseded v0.6.1 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Only remove the previous release after v0.6.2 has been published.
+          gh release view v0.6.2
+          if gh release view v0.6.1 >/dev/null 2>&1; then
+            gh release delete v0.6.1 --cleanup-tag --yes
+          fi
