@@ -1145,12 +1145,44 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
                         ((void (*)(id, SEL, BOOL))objc_msgSend)(detail, platter, YES);
                     }
 
+                    if (action == JCConnectivityActionAirDrop) {
+                        // Apple's menu controller supports a true non-indented
+                        // layout. JadeCompanion's custom host is already the
+                        // platter, so remove the inner menu indentation that was
+                        // leaving the dark option rows short on both sides.
+                        SEL indented = NSSelectorFromString(@"setUseIndentedLayout:");
+                        if ([detail respondsToSelector:indented]) {
+                            ((void (*)(id, SEL, BOOL))objc_msgSend)(detail,
+                                                                   indented,
+                                                                   NO);
+                        }
+
+                        SEL indentation = NSSelectorFromString(@"setIndentation:");
+                        if ([detail respondsToSelector:indentation]) {
+                            ((void (*)(id, SEL, NSUInteger))objc_msgSend)(detail,
+                                                                         indentation,
+                                                                         0);
+                        }
+
+                        SEL trailingInset = NSSelectorFromString(@"setUseTrailingInset:");
+                        if ([detail respondsToSelector:trailingInset]) {
+                            ((void (*)(id, SEL, BOOL))objc_msgSend)(detail,
+                                                                   trailingInset,
+                                                                   NO);
+                        }
+                    }
+
                     // These Apple detail controllers normally receive a complete
                     // Control Center appearance lifecycle. Our host swaps them in
                     // after presentation, so explicitly drive that lifecycle in
                     // showController:. Bluetooth in particular refreshes its device
                     // list from viewWillAppear:.
                     [host showController:detail];
+
+                    if (action == JCConnectivityActionAirDrop) {
+                        [detail.view setNeedsLayout];
+                        [detail.view layoutIfNeeded];
+                    }
                 } else {
                     NSLog(@"[JadeCompanion] %@ detail unavailable; showing stock Connectivity instead",
                           JCActionName(action));
