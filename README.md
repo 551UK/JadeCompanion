@@ -16,6 +16,7 @@ When you hold one of Jade's connectivity buttons, JadeCompanion opens the proper
 4. **Airplane Mode:** hold for Apple's expanded connectivity panel.
 5. **Cellular Data:** hold for Apple's expanded connectivity panel.
 6. **Normal taps remain handled by Jade exactly as before.**
+7. **A hold only opens the menu:** it does not turn the button on or off, including when you release your finger.
 
 ## What was broken
 

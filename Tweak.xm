@@ -19,6 +19,8 @@ static NSString * const JCConnectivityIdentifier = @"com.apple.control-center.Co
 
 static void (*gOrigFullWidthHandleLongPress)(id, SEL, UILongPressGestureRecognizer *) = NULL;
 static BOOL gHooksInstalled = NO;
+static char gJCConsumedLongPressKey;
+static void (*gOrigControlSendAction)(UIControl *, SEL, SEL, id, UIEvent *) = NULL;
 
 #pragma mark - Runtime helpers
 
@@ -70,6 +72,49 @@ static id JCJadeButton(id module, NSString *name) {
 
     NSString *underscored = [@"_" stringByAppendingString:name];
     return JCObjectIvar(module, underscored.UTF8String);
+}
+
+// Scope the fallback guard to Jade's actual connectivity controls. All other
+// SpringBoard controls retain their original action handling.
+static BOOL JCIsJadeConnectivityControl(UIControl *control, UIView **moduleOut) {
+    Class connectivityClass = objc_getClass("JadeConnectivityModule");
+    if (!connectivityClass || !control) return NO;
+
+    for (UIView *ancestor = control; ancestor; ancestor = ancestor.superview) {
+        if (![ancestor isKindOfClass:connectivityClass]) continue;
+
+        NSArray<NSString *> *buttonNames = @[
+            @"wifiButton", @"bluetoothButton", @"airplaneModeButton",
+            @"cellularButton", @"airDropButton"
+        ];
+
+        for (NSString *name in buttonNames) {
+            id candidate = JCJadeButton(ancestor, name);
+            if (![candidate isKindOfClass:[UIView class]]) continue;
+            UIView *button = (UIView *)candidate;
+
+            if (button == control || [control isDescendantOfView:button]) {
+                if (moduleOut) *moduleOut = ancestor;
+                return YES;
+            }
+        }
+        return NO;
+    }
+    return NO;
+}
+
+static void JCHookedControlSendAction(UIControl *control, SEL _cmd,
+                                     SEL action, id target, UIEvent *event) {
+    UIView *module = nil;
+    if (JCIsJadeConnectivityControl(control, &module) &&
+        [objc_getAssociatedObject(module, &gJCConsumedLongPressKey) boolValue]) {
+        // Jade must not dispatch a regular toggle action for a recognized hold.
+        return;
+    }
+
+    if (gOrigControlSendAction) {
+        gOrigControlSendAction(control, _cmd, action, target, event);
+    }
 }
 
 static void JCLoadControlCenterFrameworks(void) {
@@ -579,9 +624,25 @@ static void JCHookedFullWidthHandleLongPress(id self,
         return;
     }
 
-    // Jade 1.0.5 already installs this recognizer. Its stock handler sets Jade's
-    // moduleExpanded/blur state and asks the stock CC collection to expand a
-    // Connectivity module that Jade has replaced. Suppress that path completely.
+    // Ensure a recognized hold cancels the button touch, rather than delivering
+    // a normal toggle as well. A quick tap never recognizes this gesture.
+    recognizer.cancelsTouchesInView = YES;
+
+    // Keep the guard through the release event. Clear on the next main-queue
+    // turn so any release-generated button action is also discarded.
+    if (recognizer.state == UIGestureRecognizerStateEnded ||
+        recognizer.state == UIGestureRecognizerStateCancelled ||
+        recognizer.state == UIGestureRecognizerStateFailed) {
+        id module = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            objc_setAssociatedObject(module, &gJCConsumedLongPressKey,
+                                     nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        });
+        return;
+    }
+
+    // Jade's stock long-press path leaves an orphaned blur/expanded state
+    // because its replacement Connectivity module cannot expand normally.
     if (recognizer.state != UIGestureRecognizerStateBegan) return;
 
     UIView *moduleView = [self isKindOfClass:[UIView class]] ? (UIView *)self : nil;
@@ -590,6 +651,10 @@ static void JCHookedFullWidthHandleLongPress(id self,
     CGPoint point = [recognizer locationInView:moduleView];
     JCConnectivityAction action = JCActionAtLocation(self, point);
     if (action == JCConnectivityActionNone) return;
+
+    // Do not let a hold trigger the same button's usual on/off action.
+    objc_setAssociatedObject(self, &gJCConsumedLongPressKey, @YES,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     UIImpactFeedbackGenerator *feedback =
         [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
@@ -615,6 +680,13 @@ static void JCTryInstallHooks(NSUInteger attempt) {
                         longPressSelector,
                         (IMP)JCHookedFullWidthHandleLongPress,
                         (IMP *)&gOrigFullWidthHandleLongPress);
+
+        // Defensive guard against Jade forwarding a UIControl action even
+        // after the long press has been recognized. Does not alter normal taps.
+        MSHookMessageEx(objc_getClass("UIControl"),
+                        @selector(sendAction:to:forEvent:),
+                        (IMP)JCHookedControlSendAction,
+                        (IMP *)&gOrigControlSendAction);
 
         gHooksInstalled = YES;
     }

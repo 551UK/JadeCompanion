@@ -39,8 +39,8 @@ jobs:
       - name: Publish GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          tag: v0.6.1
-          name: JadeCompanion v0.6.1
+          tag: v0.6.2
+          name: JadeCompanion v0.6.2
           prerelease: false
           draft: false
           body: |
@@ -48,7 +48,7 @@ jobs:
 
             Hold Wi-Fi, Bluetooth, AirDrop, Airplane Mode or Cellular Data to open the proper Control Center connectivity views.
 
-            Normal taps still work through Jade exactly as before, and the old blur-only bug after holding a connectivity button is fixed.
+            Normal taps still toggle through Jade. Holding a button opens its menu without toggling it, and the old blur-only bug remains fixed.
           artifacts: packages/*.deb
           artifactErrorsFailBuild: true
           allowUpdates: true
