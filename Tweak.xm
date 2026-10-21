@@ -165,17 +165,6 @@ static JCConnectivityAction JCActionAtLocation(id module, CGPoint point) {
     return JCConnectivityActionNone;
 }
 
-static NSString *JCActionName(JCConnectivityAction action) {
-    switch (action) {
-        case JCConnectivityActionWiFi: return @"Wi-Fi";
-        case JCConnectivityActionBluetooth: return @"Bluetooth";
-        case JCConnectivityActionAirplane: return @"Airplane Mode";
-        case JCConnectivityActionCellular: return @"Cellular Data";
-        case JCConnectivityActionAirDrop: return @"AirDrop";
-        default: return @"Connectivity";
-    }
-}
-
 #pragma mark - Presentation helpers
 
 static UIViewController *JCTopViewController(UIViewController *controller) {
