@@ -46,7 +46,7 @@ jobs:
           body: |
             Fixes Jade's broken connectivity hold menus on iOS 16.
 
-            Hold Wi-Fi, Bluetooth, Cellular Data or Airplane Mode to open Apple's native expanded Connectivity platter using the stock Control Center Haptic Touch presentation path. The native platter now uses an opaque dark surface/backdrop, outside taps dismiss safely, and Airplane Mode refreshes its real state so both ON and OFF work. AirDrop keeps its existing dedicated menu path.
+            Hold Wi-Fi, Bluetooth, Cellular Data or Airplane Mode to open Apple's native expanded Connectivity platter using the stock Control Center Haptic Touch presentation path. The native backdrop no longer hides Jade's own view hierarchy, outside-tap teardown waits for UIKit to fully finish, and Airplane Mode falls back to the real RadiosPreferences state only if Apple's stock tap did not change it. AirDrop keeps its existing dedicated menu path.
 
             Normal taps still toggle through Jade. Holding a button opens its menu without toggling it, and the old blur-only bug remains fixed.
           artifacts: packages/*.deb

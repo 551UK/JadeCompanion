@@ -742,11 +742,16 @@ static UIViewController *JCOwningViewController(UIView *view) {
             ((BOOL (*)(id, SEL))objc_msgSend)(container, transitioningSelector);
     }
 
+    BOOL presentationBusy =
+        container.isBeingPresented ||
+        container.isBeingDismissed ||
+        container.presentingViewController != nil ||
+        container.presentedViewController != nil;
+
     // didCloseExpandedModule can arrive just before UIKit has completely torn
-    // down the click-presentation transition. Removing the controller during
-    // that tiny window is what can throw SpringBoard into Safe Mode. Wait until
-    // the stock transition reports idle before detaching anything.
-    if (transitioning && attempt < 30) {
+    // down _UIClickPresentationInteraction. Do not detach the embedded module
+    // until both ControlCenterUI and UIKit say presentation is fully idle.
+    if ((transitioning || presentationBusy) && attempt < 60) {
         __weak JCNativeConnectivitySession *weakSelf = self;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(0.08 * NSEC_PER_SEC)),
@@ -820,18 +825,13 @@ static UIViewController *JCOwningViewController(UIView *view) {
     [self applyOpaqueNativePlatterBackground];
     [self refreshAirplaneController];
 
-    // At this point Apple's own expansion animation has completed, so the
-    // compact Jade card is no longer needed as a visual source. Hide only
-    // the Jade views that existed before we inserted the stock module.
-    [self hideJadeBehindNativePlatter];
+    // Do not hide or detach Jade's own view hierarchy here. The dedicated
+    // opaque backdrop already prevents Jade from showing through, and leaving
+    // Jade's hierarchy untouched gives Apple's close transition a stable target.
 }
 
 - (void)contentModuleContainerViewController:(id)controller
                  willCloseExpandedModule:(id)module {
-    // Restore Jade before Apple's collapse animation starts so the native
-    // platter has a real compact target to animate back toward.
-    [self restoreJadeBehindNativePlatter];
-
     [self.containerViewController beginAppearanceTransition:NO animated:NO];
     [self.containerViewController endAppearanceTransition];
 }
@@ -986,34 +986,68 @@ static void JCRefreshAirplaneControllerObject(id controller) {
     }
 }
 
-static void JCHookedAirplaneButtonTapped(id self, SEL _cmd, id sender) {
-    // Only intervene for the native platter created by JadeCompanion. Stock
-    // Control Center remains completely untouched when our platter is not open.
+static void JCHookedAirplaneButtonTapped(id controller, SEL _cmd, id sender) {
     BOOL companionPlatterActive = (gNativeConnectivitySession != nil);
+
+    id prefs = nil;
+    BOOL hadRealState = NO;
+    BOOL realStateBefore = NO;
+
     if (companionPlatterActive) {
-        JCRefreshAirplaneControllerObject(self);
+        JCRefreshAirplaneControllerObject(controller);
+
+        SEL prefsSelector = NSSelectorFromString(@"airplaneModeController");
+        if ([controller respondsToSelector:prefsSelector]) {
+            prefs = ((id (*)(id, SEL))objc_msgSend)(controller, prefsSelector);
+        }
+
+        SEL getter = NSSelectorFromString(@"airplaneMode");
+        if (prefs && [prefs respondsToSelector:getter]) {
+            realStateBefore =
+                ((BOOL (*)(id, SEL))objc_msgSend)(prefs, getter);
+            hadRealState = YES;
+        }
     }
 
+    // Apple's own Control Center implementation always gets first chance.
     if (gOrigAirplaneButtonTapped) {
-        gOrigAirplaneButtonTapped(self, _cmd, sender);
+        gOrigAirplaneButtonTapped(controller, _cmd, sender);
     }
 
-    if (companionPlatterActive) {
-        // RadiosPreferences updates asynchronously. Refresh twice so both the
-        // cached toggle target and the visible subtitle/glyph follow the real
-        // airplane state before the next tap.
-        __weak id weakController = self;
+    if (!companionPlatterActive || !hadRealState || !prefs) return;
+
+    __weak id weakController = controller;
+    __weak id weakPrefs = prefs;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.35 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        id strongController = weakController;
+        id strongPrefs = weakPrefs;
+        if (!gNativeConnectivitySession || !strongController || !strongPrefs) return;
+
+        SEL getter = NSSelectorFromString(@"airplaneMode");
+        SEL setter = NSSelectorFromString(@"setAirplaneMode:");
+        if (![strongPrefs respondsToSelector:getter]) return;
+
+        BOOL realStateAfter =
+            ((BOOL (*)(id, SEL))objc_msgSend)(strongPrefs, getter);
+
+        // If Apple's stock tap already worked, do nothing. If it did not change
+        // the real radio preference in this embedded Control Center context,
+        // apply exactly the state the stock tap was trying to reach.
+        if (realStateAfter == realStateBefore &&
+            [strongPrefs respondsToSelector:setter]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(strongPrefs,
+                                                    setter,
+                                                    !realStateBefore);
+        }
+
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(0.20 * NSEC_PER_SEC)),
+                                     (int64_t)(0.18 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-            JCRefreshAirplaneControllerObject(weakController);
+            JCRefreshAirplaneControllerObject(strongController);
         });
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(0.65 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            JCRefreshAirplaneControllerObject(weakController);
-        });
-    }
+    });
 }
 
 #pragma mark - Overlay host
