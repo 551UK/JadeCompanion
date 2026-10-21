@@ -70,3 +70,12 @@ The only changes over v0.6.5 are:
 - Tapping outside the native Connectivity platter no longer calls `dismissPresentedContentAnimated:`.
 - The outside-tap delegate now closes the expanded module through Apple's dedicated `dismissExpandedModuleAnimated:` path, with a re-entry guard to prevent duplicate close requests.
 - The existing delayed cleanup remains in place so JadeCompanion does not detach the embedded stock module during Apple's close animation.
+
+
+## v0.6.9 native dismissal redesign
+
+- Airplane Mode behaviour is preserved from v0.6.7.
+- The Apple Connectivity module/container is still used for the visible native panel.
+- JadeCompanion no longer invokes Apple's private `_UIClickPresentationInteraction` for this embedded module, because stock Control Center normally supplies a `CCUIModuleCollectionViewController` owner that Jade does not have.
+- The container is switched into its native expanded state directly.
+- A tap outside the native content is handled in Jade's existing view hierarchy, collapses the native expanded state, fades it out, restores Jade, and removes the temporary controller without using any UIKit/private presentation-dismiss call.

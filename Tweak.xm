@@ -438,9 +438,12 @@ static UIViewController *JCOwningViewController(UIView *view) {
 @property (nonatomic, strong) NSArray<UIView *> *jadeViewsToHide;
 @property (nonatomic, strong) NSArray<NSNumber *> *jadeViewsOriginalHidden;
 @property (nonatomic, assign) BOOL jadeViewsHidden;
+@property (nonatomic, strong) UITapGestureRecognizer *outsideTapRecognizer;
 @property (nonatomic, assign) BOOL dismissalRequested;
 - (BOOL)installForSourceView:(UIView *)sourceView;
 - (void)expandWhenReady:(NSUInteger)attempt;
+- (void)safeOutsideTap:(UITapGestureRecognizer *)recognizer;
+- (void)dismissSafely;
 - (void)hideJadeBehindNativePlatter;
 - (void)restoreJadeBehindNativePlatter;
 - (void)cleanup;
@@ -456,7 +459,6 @@ static UIViewController *JCOwningViewController(UIView *view) {
     Class moduleClass = objc_getClass("CCUIConnectivityModule");
     Class presentationContextClass = objc_getClass("CCUIContentModulePresentationContext");
     Class containerClass = objc_getClass("CCUIContentModuleContainerViewController");
-    Class wrapperClass = objc_getClass("CCUIContentModuleContainerView");
 
     if (!contextClass || !moduleClass || !presentationContextClass || !containerClass) {
         return NO;
@@ -545,56 +547,63 @@ static UIViewController *JCOwningViewController(UIView *view) {
     self.jadeViewsToHide = jadeViews;
     self.jadeViewsOriginalHidden = jadeHiddenStates;
 
-    UIView *wrapper = nil;
-    SEL wrapperInit = NSSelectorFromString(@"initWithModuleIdentifier:options:");
-    if (wrapperClass &&
-        [wrapperClass instancesRespondToSelector:wrapperInit]) {
-        id wrapperAlloc =
-            ((id (*)(id, SEL))objc_msgSend)((id)wrapperClass, @selector(alloc));
-        wrapper =
-            ((id (*)(id, SEL, id, NSUInteger))objc_msgSend)(wrapperAlloc,
-                                                             wrapperInit,
-                                                             JCConnectivityIdentifier,
-                                                             3);
-    }
-    if (!wrapper) wrapper = [UIView new];
-
-    CGRect frame = [sourceView.superview convertRect:sourceView.frame toView:parent.view];
-    if (CGRectIsEmpty(frame) || CGRectIsNull(frame) || CGRectIsInfinite(frame)) {
-        frame = [sourceView convertRect:sourceView.bounds toView:parent.view];
-    }
-    wrapper.frame = frame;
-    wrapper.userInteractionEnabled = NO;
-    wrapper.accessibilityElementsHidden = YES;
+    // Use Apple's real Connectivity container and content, but keep it inside
+    // Jade's existing SpringBoard hierarchy. We deliberately do NOT invoke
+    // _UIClickPresentationInteraction here: that object assumes the real
+    // CCUIModuleCollectionViewController owns the module, which is not true
+    // inside Jade and is what made outside-tap dismissal crash SpringBoard.
+    UIView *wrapper = [[UIView alloc] initWithFrame:parent.view.bounds];
+    wrapper.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    wrapper.backgroundColor = UIColor.clearColor;
+    wrapper.userInteractionEnabled = YES;
+    wrapper.alpha = 0.0;
 
     [parent addChildViewController:container];
 
-    UIView *contentHost = wrapper;
-    SEL containerViewSelector = NSSelectorFromString(@"containerView");
-    if ([wrapper respondsToSelector:containerViewSelector]) {
-        id candidate =
-            ((id (*)(id, SEL))objc_msgSend)(wrapper, containerViewSelector);
-        if ([candidate isKindOfClass:[UIView class]]) {
-            contentHost = candidate;
-        }
-    }
-
     UIView *containerView = ((UIViewController *)container).view;
-    containerView.frame = contentHost.bounds;
+    containerView.frame = wrapper.bounds;
     containerView.autoresizingMask =
         UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [contentHost addSubview:containerView];
-
-    // Keep the real compact Control Center module in the same window, but behind
-    // Jade. Apple's own click-presentation controller can then perform the exact
-    // native Haptic Touch expansion without JadeCompanion drawing a fake platter.
-    [parent.view insertSubview:wrapper atIndex:0];
+    [wrapper addSubview:containerView];
+    [parent.view addSubview:wrapper];
 
     [container didMoveToParentViewController:parent];
     [wrapper setNeedsLayout];
     [wrapper layoutIfNeeded];
     [containerView setNeedsLayout];
     [containerView layoutIfNeeded];
+
+    // Remove Apple's click-presentation interaction from this embedded instance.
+    // The native module UI remains intact; only the unsupported presenter is gone.
+    id clickInteraction = JCObjectForSelector(container, @"clickPresentationInteraction");
+    SEL removeInteraction = NSSelectorFromString(@"removeInteraction:");
+    if (clickInteraction && [containerView respondsToSelector:removeInteraction]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(containerView,
+                                              removeInteraction,
+                                              clickInteraction);
+    }
+
+    id stockTap = JCObjectForSelector(container, @"tapRecognizer");
+    if ([stockTap respondsToSelector:@selector(setEnabled:)]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(stockTap,
+                                                @selector(setEnabled:),
+                                                NO);
+    }
+
+    id expandTap = JCObjectForSelector(container, @"expandModuleOnTouchTapRecognizer");
+    if ([expandTap respondsToSelector:@selector(setEnabled:)]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(expandTap,
+                                                @selector(setEnabled:),
+                                                NO);
+    }
+
+    UITapGestureRecognizer *outsideTap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                action:@selector(safeOutsideTap:)];
+    outsideTap.cancelsTouchesInView = NO;
+    [containerView addGestureRecognizer:outsideTap];
+    self.outsideTapRecognizer = outsideTap;
 
     [container beginAppearanceTransition:YES animated:NO];
     [container endAppearanceTransition];
@@ -621,12 +630,45 @@ static UIViewController *JCOwningViewController(UIView *view) {
     if (!container) return;
 
     if (container.view.window) {
-        SEL expand = NSSelectorFromString(@"expandModule");
-        if ([container respondsToSelector:expand]) {
-            ((void (*)(id, SEL))objc_msgSend)(container, expand);
+        id content = JCObjectForSelector(container, @"contentViewController");
+
+        // Drive the same stock expanded-content state, without asking UIKit's
+        // private click-presentation object to create/dismiss a presentation.
+        JCVoidBool(content, @"willTransitionToExpandedContentMode:", YES);
+
+        SEL setExpanded = NSSelectorFromString(@"setExpanded:");
+        if ([container respondsToSelector:setExpanded]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(container, setExpanded, YES);
+        }
+
+        SEL transition = NSSelectorFromString(@"transitionToExpandedMode:");
+        if (![container respondsToSelector:transition]) {
+            [self cleanup];
             return;
         }
-        [self cleanup];
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(container, transition, YES);
+
+        // Preserve the v0.6.7 Airplane behaviour that is working on-device.
+        if ([content isKindOfClass:[UIViewController class]]) {
+            id airplane = JCFindChildController((UIViewController *)content,
+                                                JCConnectivityActionAirplane);
+            SEL observe =
+                NSSelectorFromString(@"startObservingStateChangesIfNecessary");
+            SEL update = NSSelectorFromString(@"_updateState");
+            if (airplane && [airplane respondsToSelector:observe]) {
+                ((void (*)(id, SEL))objc_msgSend)(airplane, observe);
+            }
+            if (airplane && [airplane respondsToSelector:update]) {
+                ((void (*)(id, SEL))objc_msgSend)(airplane, update);
+            }
+        }
+
+        [self hideJadeBehindNativePlatter];
+
+        [UIView animateWithDuration:0.16
+                         animations:^{
+            self.moduleContainerView.alpha = 1.0;
+        }];
         return;
     }
 
@@ -641,6 +683,65 @@ static UIViewController *JCOwningViewController(UIView *view) {
                    dispatch_get_main_queue(), ^{
         [weakSelf expandWhenReady:attempt + 1];
     });
+}
+
+- (void)safeOutsideTap:(UITapGestureRecognizer *)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateEnded ||
+        self.dismissalRequested) {
+        return;
+    }
+
+    UIViewController *container = self.containerViewController;
+    UIView *containerView = container.view;
+    if (!container || !containerView) return;
+
+    id contentContainer = JCObjectForSelector(container, @"contentContainerView");
+    if (![contentContainer isKindOfClass:[UIView class]]) {
+        contentContainer = JCObjectForSelector(container, @"moduleContentView");
+    }
+
+    CGPoint point = [recognizer locationInView:containerView];
+    if ([contentContainer isKindOfClass:[UIView class]]) {
+        UIView *contentView = (UIView *)contentContainer;
+        CGRect contentFrame =
+            [contentView.superview convertRect:contentView.frame
+                                        toView:containerView];
+        if (CGRectContainsPoint(contentFrame, point)) {
+            return;
+        }
+    }
+
+    [self dismissSafely];
+}
+
+- (void)dismissSafely {
+    if (self.dismissalRequested) return;
+    self.dismissalRequested = YES;
+
+    UIViewController *container = self.containerViewController;
+    id content = JCObjectForSelector(container, @"contentViewController");
+
+    // Restore Jade underneath first, then collapse/fade the native module.
+    [self restoreJadeBehindNativePlatter];
+    JCVoidBool(content, @"willTransitionToExpandedContentMode:", NO);
+
+    SEL transition = NSSelectorFromString(@"transitionToExpandedMode:");
+    if ([container respondsToSelector:transition]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(container, transition, NO);
+    }
+
+    SEL setExpanded = NSSelectorFromString(@"setExpanded:");
+    if ([container respondsToSelector:setExpanded]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(container, setExpanded, NO);
+    }
+
+    __weak JCNativeConnectivitySession *weakSelf = self;
+    [UIView animateWithDuration:0.18
+                     animations:^{
+        weakSelf.moduleContainerView.alpha = 0.0;
+    } completion:^(BOOL finished) {
+        [weakSelf cleanup];
+    }];
 }
 
 - (CGRect)compactModeFrameForContentModuleContainerViewController:(id)controller {
@@ -724,16 +825,7 @@ static UIViewController *JCOwningViewController(UIView *view) {
 
 - (void)contentModuleContainerViewController:(id)controller
                   didCloseExpandedModule:(id)module {
-    // Apple's click-presentation dismissal is not completely torn down when
-    // this callback first arrives. Detaching our embedded module immediately
-    // can crash SpringBoard. Keep everything alive briefly, then clean up after
-    // UIKit has finished the close transition.
-    __weak JCNativeConnectivitySession *weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.75 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        [weakSelf cleanup];
-    });
+    [self dismissSafely];
 }
 
 - (void)contentModuleContainerViewController:(id)controller
@@ -749,27 +841,7 @@ static UIViewController *JCOwningViewController(UIView *view) {
 }
 
 - (void)contentModuleContainerViewControllerDismissPresentedContent:(id)controller {
-    // This delegate callback is Apple's outside-tap path. Because our stock
-    // Connectivity container is embedded inside Jade rather than the real
-    // Control Center collection controller, dismissPresentedContentAnimated:
-    // can tear down the click-presentation object incorrectly and crash
-    // SpringBoard. Close the expanded module itself instead.
-    if (self.dismissalRequested) return;
-    self.dismissalRequested = YES;
-
-    SEL dismissExpanded = NSSelectorFromString(@"dismissExpandedModuleAnimated:");
-    if ([controller respondsToSelector:dismissExpanded]) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(controller,
-                                                dismissExpanded,
-                                                YES);
-        return;
-    }
-
-    // Older fallback: collapse the module directly if that selector exists.
-    SEL transition = NSSelectorFromString(@"transitionToExpandedMode:");
-    if ([controller respondsToSelector:transition]) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(controller, transition, NO);
-    }
+    [self dismissSafely];
 }
 
 - (void)contentModuleContext:(id)context enqueueStatusUpdate:(id)status {
@@ -780,8 +852,7 @@ static UIViewController *JCOwningViewController(UIView *view) {
 }
 
 - (void)dismissExpandedViewForContentModuleContext:(id)context {
-    [self contentModuleContainerViewControllerDismissPresentedContent:
-        self.containerViewController];
+    [self dismissSafely];
 }
 
 - (void)dismissControlCenterForContentModuleContext:(id)context {
@@ -855,9 +926,12 @@ static UIViewController *JCOwningViewController(UIView *view) {
     self.connectivityModule = nil;
     self.contentModuleContext = nil;
     self.presentationContext = nil;
+    [self.outsideTapRecognizer.view
+        removeGestureRecognizer:self.outsideTapRecognizer];
+    self.outsideTapRecognizer = nil;
+    self.dismissalRequested = NO;
     self.jadeViewsToHide = nil;
     self.jadeViewsOriginalHidden = nil;
-    self.dismissalRequested = NO;
 
     if (gNativeConnectivitySession == self) {
         gNativeConnectivitySession = nil;
@@ -870,7 +944,8 @@ static BOOL JCPresentNativeConnectivityPlatter(UIView *sourceView) {
     if (!sourceView) return NO;
 
     if (gNativeConnectivitySession) {
-        [gNativeConnectivitySession cleanup];
+        [gNativeConnectivitySession dismissSafely];
+        return NO;
     }
 
     JCNativeConnectivitySession *session = [JCNativeConnectivitySession new];

@@ -39,16 +39,16 @@ jobs:
       - name: Publish GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          tag: v0.6.8
-          name: JadeCompanion v0.6.8
+          tag: v0.6.9
+          name: JadeCompanion v0.6.9
           prerelease: false
           draft: false
           body: |
             Fixes Jade's broken connectivity hold menus on iOS 16.
 
-            Hold Wi-Fi, Bluetooth, Cellular Data or Airplane Mode to open Apple's native expanded Connectivity platter. v0.6.8 is a stability reset based on the last known-loading v0.6.5 code: the v0.6.6 global Airplane hook and custom root-window backdrop are removed. AirDrop keeps its existing dedicated menu path.
+            Hold Wi-Fi, Bluetooth, Cellular Data or Airplane Mode to open Apple's native expanded Connectivity platter. v0.6.9 is a stability reset based on the last known-loading v0.6.5 code: the v0.6.6 global Airplane hook and custom root-window backdrop are removed. AirDrop keeps its existing dedicated menu path.
 
-            Normal taps still toggle through Jade. Outside taps now close the expanded stock Connectivity module through dismissExpandedModuleAnimated: instead of the unsafe presentation-dismiss path. Airplane behaviour is unchanged from v0.6.7.
+            Normal taps still toggle through Jade. v0.6.9 removes the unsupported click-presentation object entirely: outside taps are handled locally and collapse/remove the native expanded module without invoking a UIKit presentation dismissal. Airplane behaviour remains the working v0.6.7 path.
           artifacts: packages/*.deb
           artifactErrorsFailBuild: true
           allowUpdates: true
@@ -59,9 +59,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Only remove older releases after v0.6.8 has been published.
-          gh release view v0.6.8
-          for tag in v0.6.2 v0.6.3 v0.6.4 v0.6.5 v0.6.6 v0.6.7; do
+          # Only remove older releases after v0.6.9 has been published.
+          gh release view v0.6.9
+          for tag in v0.6.2 v0.6.3 v0.6.4 v0.6.5 v0.6.6 v0.6.7 v0.6.8; do
             if gh release view "$tag" >/dev/null 2>&1; then
               gh release delete "$tag" --cleanup-tag --yes
             fi
