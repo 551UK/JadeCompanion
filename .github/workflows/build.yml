@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  issues:
+    types: [opened]
 
 permissions:
   contents: write
@@ -14,6 +16,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name != 'issues' || github.event.issue.title == 'Cleanup JadeCompanion v0.6.4'
     runs-on: macos-latest
 
     steps:
