@@ -324,12 +324,6 @@ static id JCFindChildController(UIViewController *parent, JCConnectivityAction a
     NSString *needle = nil;
 
     switch (action) {
-        case JCConnectivityActionWiFi:
-            names = @[@"wifiButton", @"wifiButtonViewController",
-                      @"expandedWifiButtonViewController", @"wifiModuleViewController"];
-            needle = @"wifi";
-            break;
-
         case JCConnectivityActionBluetooth:
             names = @[@"bluetoothButton", @"bluetoothButtonViewController",
                       @"expandedBluetoothButtonViewController", @"bluetoothModuleViewController"];
@@ -577,8 +571,10 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
     [presenter presentViewController:host animated:YES completion:^{
         [host showController:connectivityController];
 
-        if (action == JCConnectivityActionWiFi ||
-            action == JCConnectivityActionBluetooth ||
+        // Wi-Fi, Cellular Data and Airplane Mode intentionally stay on
+        // Apple's expanded six-button Connectivity panel. Only Bluetooth and
+        // AirDrop drill into their existing native detail menus.
+        if (action == JCConnectivityActionBluetooth ||
             action == JCConnectivityActionAirDrop) {
 
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,

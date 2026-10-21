@@ -10,7 +10,7 @@ JadeCompanion fixes both problems.
 
 When you hold one of Jade's connectivity buttons, JadeCompanion opens the proper connectivity menu instead of letting Jade use the broken hold behaviour.
 
-1. **Wi-Fi:** hold for Apple's Wi-Fi detail menu.
+1. **Wi-Fi:** hold for Apple's expanded stock connectivity panel.
 2. **Bluetooth:** hold for Apple's Bluetooth device menu.
 3. **AirDrop:** hold for Apple's AirDrop menu.
 4. **Airplane Mode:** hold for Apple's expanded connectivity panel.
