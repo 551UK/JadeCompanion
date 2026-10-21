@@ -74,3 +74,10 @@ Keeps the working v0.6.11 native Connectivity platter, Airplane Mode behaviour a
 The SpringBoard crash log identifies Jade.dylib as the exception source during `CCUIContentModuleContainerViewController dismissModulePresentedContentAnimated:completion:`: Jade indexes element 0 of an empty mutable array. v0.6.13 therefore does not call `dismissPresentedContentAnimated:` or `dismissExpandedModuleAnimated:` for JadeCompanion's embedded Connectivity platter. Both feed through the crashing Jade hook.
 
 Outside-tap dismissal now jumps directly to the same final UIKit operation that ControlCenterUI's `_closeExpandedModule:` eventually uses: `dismissViewControllerAnimated:completion:`. Jade is restored before the animation and the temporary embedded host is removed only in UIKit's completion block. Airplane Mode and platter presentation are unchanged.
+
+
+## v0.6.14 expanded-state dismissal fix
+
+v0.6.13 still left `CCUIContentModuleContainerViewController.isExpanded` set to YES when calling UIKit dismissal. ControlCenterUI's own `viewWillDisappear:` checks that flag and, when true, calls `_closeExpandedModule:`, which routes back through `dismissModulePresentedContentAnimated:completion:` and Jade's crashing hook.
+
+v0.6.14 clears only the container's private expanded-state flag before calling `dismissViewControllerAnimated:completion:`. This prevents `viewWillDisappear:` from re-entering Jade's broken module-dismissal path. The native platter presentation, Airplane Mode behaviour, and outside-tap trigger are otherwise unchanged.

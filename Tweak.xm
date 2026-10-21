@@ -789,9 +789,18 @@ static UIViewController *JCOwningViewController(UIView *view) {
     // dismissPresentedContentAnimated: or dismissExpandedModuleAnimated:
     // because both route through that Jade-hooked method.
     //
-    // ControlCenterUI's own _closeExpandedModule: ultimately finishes with
-    // UIViewController's dismissViewControllerAnimated:completion:. Jump
-    // directly to that final UIKit step for this embedded native module.
+    // ControlCenterUI's viewWillDisappear checks isExpanded. If it is still
+    // YES, it calls _closeExpandedModule:, which routes straight back through
+    // dismissModulePresentedContentAnimated:completion: and Jade's crashing
+    // hook. Clear ONLY that state flag before UIKit begins dismissal so
+    // viewWillDisappear cannot re-enter Jade's broken dismissal path.
+    SEL setExpanded = NSSelectorFromString(@"setExpanded:");
+    if ([container respondsToSelector:setExpanded]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(container,
+                                                setExpanded,
+                                                NO);
+    }
+
     [self restoreJadeBehindNativePlatter];
 
     __weak JCNativeConnectivitySession *weakSelf = self;
