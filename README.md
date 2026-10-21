@@ -52,3 +52,10 @@ Because Jade is no longer left stuck in its broken expanded state, the old **blu
 - Hold Wi-Fi, Bluetooth, AirDrop, Airplane Mode or Cellular Data: the correct menu should open without changing its toggle state.
 - Release after a hold: nothing should turn off or back on.
 - Close the menu, then try another short tap: Jade's normal toggling should still work.
+
+
+## v0.6.6 behaviour
+
+- The native Connectivity platter now has an opaque dark surface and a dedicated dark backdrop, so Jade cannot show through it.
+- Tapping outside the platter dismisses it through the stock Control Center close path; cleanup waits until Apple's transition is idle to avoid the Safe Mode crash.
+- Airplane Mode refreshes its real radio state before and after a tap so it can switch both on and off from the native platter.

@@ -21,6 +21,7 @@ static void (*gOrigFullWidthHandleLongPress)(id, SEL, UILongPressGestureRecogniz
 static BOOL gHooksInstalled = NO;
 static char gJCConsumedLongPressKey;
 static void (*gOrigControlSendAction)(UIControl *, SEL, SEL, id, UIEvent *) = NULL;
+static void (*gOrigAirplaneButtonTapped)(id, SEL, id) = NULL;
 
 #pragma mark - Runtime helpers
 
@@ -324,6 +325,14 @@ static id JCFindChildController(UIViewController *parent, JCConnectivityAction a
     NSString *needle = nil;
 
     switch (action) {
+        case JCConnectivityActionAirplane:
+            names = @[@"airplaneModeButton", @"airplaneButton",
+                      @"airplaneButtonViewController",
+                      @"expandedAirplaneButtonViewController",
+                      @"airplaneModeViewController"];
+            needle = @"airplane";
+            break;
+
         case JCConnectivityActionBluetooth:
             names = @[@"bluetoothButton", @"bluetoothButtonViewController",
                       @"expandedBluetoothButtonViewController", @"bluetoothModuleViewController"];
@@ -432,8 +441,15 @@ static UIViewController *JCOwningViewController(UIView *view) {
 @property (nonatomic, strong) NSArray<UIView *> *jadeViewsToHide;
 @property (nonatomic, strong) NSArray<NSNumber *> *jadeViewsOriginalHidden;
 @property (nonatomic, assign) BOOL jadeViewsHidden;
+@property (nonatomic, strong) UIControl *dismissBackdropView;
+@property (nonatomic, assign) BOOL dismissalRequested;
+@property (nonatomic, assign) BOOL cleanupScheduled;
 - (BOOL)installForSourceView:(UIView *)sourceView;
 - (void)expandWhenReady:(NSUInteger)attempt;
+- (void)applyOpaqueNativePlatterBackground;
+- (void)refreshAirplaneController;
+- (void)requestDismissal;
+- (void)cleanupWhenSafe:(NSUInteger)attempt;
 - (void)hideJadeBehindNativePlatter;
 - (void)restoreJadeBehindNativePlatter;
 - (void)cleanup;
@@ -538,6 +554,23 @@ static UIViewController *JCOwningViewController(UIView *view) {
     self.jadeViewsToHide = jadeViews;
     self.jadeViewsOriginalHidden = jadeHiddenStates;
 
+    // The stock Control Center platter expects a Control Center backdrop behind
+    // it. Jade is not that backdrop, which is why its UI showed through the
+    // translucent material. Put an almost-opaque dark intercepting layer in the
+    // actual SpringBoard window before Apple's presentation begins. The native
+    // platter is presented above this layer, while taps outside the platter land
+    // here and are dismissed through the safe Control Center close path.
+    UIControl *backdrop = [[UIControl alloc] initWithFrame:sourceView.window.bounds];
+    backdrop.autoresizingMask =
+        UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    backdrop.backgroundColor = [UIColor colorWithWhite:0.02 alpha:0.94];
+    backdrop.accessibilityLabel = @"Dismiss Connectivity";
+    [backdrop addTarget:self
+                 action:@selector(nativeBackdropTapped:)
+       forControlEvents:UIControlEventTouchUpInside];
+    [sourceView.window addSubview:backdrop];
+    self.dismissBackdropView = backdrop;
+
     UIView *wrapper = nil;
     SEL wrapperInit = NSSelectorFromString(@"initWithModuleIdentifier:options:");
     if (wrapperClass &&
@@ -605,6 +638,8 @@ static UIViewController *JCOwningViewController(UIView *view) {
     self.contentModuleContext = context;
     self.presentationContext = presentationContext;
 
+    [self applyOpaqueNativePlatterBackground];
+    [self refreshAirplaneController];
     [self expandWhenReady:0];
     return YES;
 }
@@ -636,6 +671,100 @@ static UIViewController *JCOwningViewController(UIView *view) {
     });
 }
 
+- (void)applyOpaqueNativePlatterBackground {
+    UIViewController *container = self.containerViewController;
+    if (!container) return;
+
+    id background = JCObjectForSelector(container, @"backgroundView");
+    if ([background isKindOfClass:[UIView class]]) {
+        UIView *backgroundView = (UIView *)background;
+        // Apple's material can remain in place for the stock look, but the
+        // surface underneath it is now fully opaque so Jade cannot bleed through.
+        backgroundView.backgroundColor = [UIColor colorWithWhite:0.07 alpha:1.0];
+        backgroundView.opaque = YES;
+    }
+}
+
+- (void)refreshAirplaneController {
+    UIViewController *container = self.containerViewController;
+    if (!container) return;
+
+    id content = JCObjectForSelector(container, @"contentViewController");
+    if (![content isKindOfClass:[UIViewController class]]) return;
+
+    id airplane = JCFindChildController((UIViewController *)content,
+                                        JCConnectivityActionAirplane);
+    if (!airplane) return;
+
+    SEL observe = NSSelectorFromString(@"startObservingStateChangesIfNecessary");
+    if ([airplane respondsToSelector:observe]) {
+        ((void (*)(id, SEL))objc_msgSend)(airplane, observe);
+    }
+
+    SEL update = NSSelectorFromString(@"_updateState");
+    if ([airplane respondsToSelector:update]) {
+        ((void (*)(id, SEL))objc_msgSend)(airplane, update);
+    }
+}
+
+- (void)nativeBackdropTapped:(id)sender {
+    [self requestDismissal];
+}
+
+- (void)requestDismissal {
+    if (self.dismissalRequested) return;
+    self.dismissalRequested = YES;
+    self.dismissBackdropView.userInteractionEnabled = NO;
+
+    UIViewController *container = self.containerViewController;
+    SEL dismiss = NSSelectorFromString(@"dismissPresentedContentAnimated:");
+    if (container && [container respondsToSelector:dismiss]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(container, dismiss, YES);
+    } else {
+        [self cleanupWhenSafe:0];
+    }
+}
+
+- (void)cleanupWhenSafe:(NSUInteger)attempt {
+    if (self.cleanupScheduled && attempt == 0) return;
+    if (attempt == 0) self.cleanupScheduled = YES;
+
+    UIViewController *container = self.containerViewController;
+    if (!container) {
+        [self cleanup];
+        return;
+    }
+
+    BOOL transitioning = NO;
+    SEL transitioningSelector = NSSelectorFromString(@"isTransitioning");
+    if ([container respondsToSelector:transitioningSelector]) {
+        transitioning =
+            ((BOOL (*)(id, SEL))objc_msgSend)(container, transitioningSelector);
+    }
+
+    // didCloseExpandedModule can arrive just before UIKit has completely torn
+    // down the click-presentation transition. Removing the controller during
+    // that tiny window is what can throw SpringBoard into Safe Mode. Wait until
+    // the stock transition reports idle before detaching anything.
+    if (transitioning && attempt < 30) {
+        __weak JCNativeConnectivitySession *weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.08 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [weakSelf cleanupWhenSafe:attempt + 1];
+        });
+        return;
+    }
+
+    // Give UIKit one final run-loop window after the native close animation.
+    __weak JCNativeConnectivitySession *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.18 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [weakSelf cleanup];
+    });
+}
+
 - (CGRect)compactModeFrameForContentModuleContainerViewController:(id)controller {
     UIView *source = self.sourceView;
     if (!source) return self.moduleContainerView.frame;
@@ -660,6 +789,9 @@ static UIViewController *JCOwningViewController(UIView *view) {
 
 - (void)contentModuleContainerViewController:(id)controller
                didBeginInteractionWithModule:(id)module {
+    [self applyOpaqueNativePlatterBackground];
+    [self refreshAirplaneController];
+
     SEL ignore = NSSelectorFromString(@"setIgnoreFrameUpdates:");
     if ([self.moduleContainerView respondsToSelector:ignore]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(self.moduleContainerView, ignore, YES);
@@ -676,12 +808,18 @@ static UIViewController *JCOwningViewController(UIView *view) {
 
 - (void)contentModuleContainerViewController:(id)controller
                   willOpenExpandedModule:(id)module {
+    [self applyOpaqueNativePlatterBackground];
+    [self refreshAirplaneController];
+
     [self.containerViewController beginAppearanceTransition:YES animated:NO];
     [self.containerViewController endAppearanceTransition];
 }
 
 - (void)contentModuleContainerViewController:(id)controller
                    didOpenExpandedModule:(id)module {
+    [self applyOpaqueNativePlatterBackground];
+    [self refreshAirplaneController];
+
     // At this point Apple's own expansion animation has completed, so the
     // compact Jade card is no longer needed as a visual source. Hide only
     // the Jade views that existed before we inserted the stock module.
@@ -700,10 +838,7 @@ static UIViewController *JCOwningViewController(UIView *view) {
 
 - (void)contentModuleContainerViewController:(id)controller
                   didCloseExpandedModule:(id)module {
-    __weak JCNativeConnectivitySession *weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [weakSelf cleanup];
-    });
+    [self cleanupWhenSafe:0];
 }
 
 - (void)contentModuleContainerViewController:(id)controller
@@ -719,10 +854,7 @@ static UIViewController *JCOwningViewController(UIView *view) {
 }
 
 - (void)contentModuleContainerViewControllerDismissPresentedContent:(id)controller {
-    SEL dismiss = NSSelectorFromString(@"dismissPresentedContentAnimated:");
-    if ([controller respondsToSelector:dismiss]) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(controller, dismiss, YES);
-    }
+    [self requestDismissal];
 }
 
 - (void)contentModuleContext:(id)context enqueueStatusUpdate:(id)status {
@@ -733,16 +865,11 @@ static UIViewController *JCOwningViewController(UIView *view) {
 }
 
 - (void)dismissExpandedViewForContentModuleContext:(id)context {
-    SEL dismiss = NSSelectorFromString(@"dismissPresentedContentAnimated:");
-    if ([self.containerViewController respondsToSelector:dismiss]) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(self.containerViewController,
-                                                dismiss,
-                                                YES);
-    }
+    [self requestDismissal];
 }
 
 - (void)dismissControlCenterForContentModuleContext:(id)context {
-    [self dismissExpandedViewForContentModuleContext:context];
+    [self requestDismissal];
 }
 
 - (void)requestModuleLayoutSizeUpdateForContentModuleContext:(id)context {
@@ -806,6 +933,7 @@ static UIViewController *JCOwningViewController(UIView *view) {
     }
 
     [self.moduleContainerView removeFromSuperview];
+    [self.dismissBackdropView removeFromSuperview];
 
     self.containerViewController = nil;
     self.moduleContainerView = nil;
@@ -814,6 +942,9 @@ static UIViewController *JCOwningViewController(UIView *view) {
     self.presentationContext = nil;
     self.jadeViewsToHide = nil;
     self.jadeViewsOriginalHidden = nil;
+    self.dismissBackdropView = nil;
+    self.dismissalRequested = NO;
+    self.cleanupScheduled = NO;
 
     if (gNativeConnectivitySession == self) {
         gNativeConnectivitySession = nil;
@@ -826,7 +957,8 @@ static BOOL JCPresentNativeConnectivityPlatter(UIView *sourceView) {
     if (!sourceView) return NO;
 
     if (gNativeConnectivitySession) {
-        [gNativeConnectivitySession cleanup];
+        [gNativeConnectivitySession requestDismissal];
+        return NO;
     }
 
     JCNativeConnectivitySession *session = [JCNativeConnectivitySession new];
@@ -838,6 +970,50 @@ static BOOL JCPresentNativeConnectivityPlatter(UIView *sourceView) {
     }
 
     return YES;
+}
+
+static void JCRefreshAirplaneControllerObject(id controller) {
+    if (!controller) return;
+
+    SEL observe = NSSelectorFromString(@"startObservingStateChangesIfNecessary");
+    if ([controller respondsToSelector:observe]) {
+        ((void (*)(id, SEL))objc_msgSend)(controller, observe);
+    }
+
+    SEL update = NSSelectorFromString(@"_updateState");
+    if ([controller respondsToSelector:update]) {
+        ((void (*)(id, SEL))objc_msgSend)(controller, update);
+    }
+}
+
+static void JCHookedAirplaneButtonTapped(id self, SEL _cmd, id sender) {
+    // Only intervene for the native platter created by JadeCompanion. Stock
+    // Control Center remains completely untouched when our platter is not open.
+    BOOL companionPlatterActive = (gNativeConnectivitySession != nil);
+    if (companionPlatterActive) {
+        JCRefreshAirplaneControllerObject(self);
+    }
+
+    if (gOrigAirplaneButtonTapped) {
+        gOrigAirplaneButtonTapped(self, _cmd, sender);
+    }
+
+    if (companionPlatterActive) {
+        // RadiosPreferences updates asynchronously. Refresh twice so both the
+        // cached toggle target and the visible subtitle/glyph follow the real
+        // airplane state before the next tap.
+        __weak id weakController = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.20 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            JCRefreshAirplaneControllerObject(weakController);
+        });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.65 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            JCRefreshAirplaneControllerObject(weakController);
+        });
+    }
 }
 
 #pragma mark - Overlay host
@@ -1115,7 +1291,18 @@ static void JCTryInstallHooks(NSUInteger attempt) {
 
     Class fullWidthClass = objc_getClass("JadeFullWidthModule");
     Class connectivityClass = objc_getClass("JadeConnectivityModule");
+    Class airplaneClass = objc_getClass("CCUIConnectivityAirplaneViewController");
     SEL longPressSelector = NSSelectorFromString(@"handleLongPress:");
+
+    if (!gOrigAirplaneButtonTapped && airplaneClass) {
+        SEL airplaneTap = NSSelectorFromString(@"buttonTapped:");
+        if (class_getInstanceMethod(airplaneClass, airplaneTap)) {
+            MSHookMessageEx(airplaneClass,
+                            airplaneTap,
+                            (IMP)JCHookedAirplaneButtonTapped,
+                            (IMP *)&gOrigAirplaneButtonTapped);
+        }
+    }
 
     if (!gHooksInstalled &&
         fullWidthClass &&
