@@ -79,3 +79,8 @@ The only changes over v0.6.5 are:
 - JadeCompanion no longer invokes Apple's private `_UIClickPresentationInteraction` for this embedded module, because stock Control Center normally supplies a `CCUIModuleCollectionViewController` owner that Jade does not have.
 - The container is switched into its native expanded state directly.
 - A tap outside the native content is handled in Jade's existing view hierarchy, collapses the native expanded state, fades it out, restores Jade, and removes the temporary controller without using any UIKit/private presentation-dismiss call.
+
+
+## v0.6.10 stability rollback
+
+v0.6.10 restores the exact tweak implementation from the last known-loading v0.6.7 source commit. All v0.6.8 and v0.6.9 dismissal experiments have been removed. This release intentionally does not try to change the native outside-tap dismissal behavior.
