@@ -45,3 +45,10 @@ In simple terms:
 
 Because Jade is no longer left stuck in its broken expanded state, the old **blur-only bug is fixed too**.
 
+
+## Quick checks
+
+- Tap Wi-Fi or Bluetooth briefly: it should toggle once, as it did before.
+- Hold Wi-Fi, Bluetooth, AirDrop, Airplane Mode or Cellular Data: the correct menu should open without changing its toggle state.
+- Release after a hold: nothing should turn off or back on.
+- Close the menu, then try another short tap: Jade's normal toggling should still work.
