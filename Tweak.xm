@@ -438,10 +438,12 @@ static UIViewController *JCOwningViewController(UIView *view) {
 @property (nonatomic, strong) NSArray<UIView *> *jadeViewsToHide;
 @property (nonatomic, strong) NSArray<NSNumber *> *jadeViewsOriginalHidden;
 @property (nonatomic, assign) BOOL jadeViewsHidden;
+@property (nonatomic, assign) BOOL dismissalRequested;
 - (BOOL)installForSourceView:(UIView *)sourceView;
 - (void)expandWhenReady:(NSUInteger)attempt;
 - (void)hideJadeBehindNativePlatter;
 - (void)restoreJadeBehindNativePlatter;
+- (void)dismissContainerBypassingJadeModuleDismissal;
 - (void)cleanup;
 @end
 
@@ -720,13 +722,14 @@ static UIViewController *JCOwningViewController(UIView *view) {
 
 - (void)contentModuleContainerViewController:(id)controller
                   didCloseExpandedModule:(id)module {
-    // Apple's click-presentation dismissal is not completely torn down when
-    // this callback first arrives. Detaching our embedded module immediately
-    // can crash SpringBoard. Keep everything alive briefly, then clean up after
-    // UIKit has finished the close transition.
+    // Direct UIKit dismissal above owns cleanup via its completion block.
+    // If another ControlCenterUI path closes the module, fall back to a short
+    // delayed cleanup only when we did not already request dismissal.
+    if (self.dismissalRequested) return;
+
     __weak JCNativeConnectivitySession *weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(0.75 * NSEC_PER_SEC)),
+                                 (int64_t)(0.30 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         [weakSelf cleanup];
     });
@@ -744,10 +747,7 @@ static UIViewController *JCOwningViewController(UIView *view) {
 }
 
 - (void)contentModuleContainerViewControllerDismissPresentedContent:(id)controller {
-    SEL dismiss = NSSelectorFromString(@"dismissPresentedContentAnimated:");
-    if ([controller respondsToSelector:dismiss]) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(controller, dismiss, YES);
-    }
+    [self dismissContainerBypassingJadeModuleDismissal];
 }
 
 - (void)contentModuleContext:(id)context enqueueStatusUpdate:(id)status {
@@ -758,12 +758,7 @@ static UIViewController *JCOwningViewController(UIView *view) {
 }
 
 - (void)dismissExpandedViewForContentModuleContext:(id)context {
-    SEL dismiss = NSSelectorFromString(@"dismissPresentedContentAnimated:");
-    if ([self.containerViewController respondsToSelector:dismiss]) {
-        ((void (*)(id, SEL, BOOL))objc_msgSend)(self.containerViewController,
-                                                dismiss,
-                                                YES);
-    }
+    [self dismissContainerBypassingJadeModuleDismissal];
 }
 
 - (void)dismissControlCenterForContentModuleContext:(id)context {
@@ -777,6 +772,34 @@ static UIViewController *JCOwningViewController(UIView *view) {
                                               forOrientation:(NSInteger)orientation {
     JCModuleLayoutSize size = {2, 2};
     return size;
+}
+
+- (void)dismissContainerBypassingJadeModuleDismissal {
+    if (self.dismissalRequested) return;
+    self.dismissalRequested = YES;
+
+    UIViewController *container = self.containerViewController;
+    if (!container) {
+        [self cleanup];
+        return;
+    }
+
+    // The crash log shows Jade.dylib throwing from inside
+    // dismissModulePresentedContentAnimated:completion:. Do not call
+    // dismissPresentedContentAnimated: or dismissExpandedModuleAnimated:
+    // because both route through that Jade-hooked method.
+    //
+    // ControlCenterUI's own _closeExpandedModule: ultimately finishes with
+    // UIViewController's dismissViewControllerAnimated:completion:. Jump
+    // directly to that final UIKit step for this embedded native module.
+    [self restoreJadeBehindNativePlatter];
+
+    __weak JCNativeConnectivitySession *weakSelf = self;
+    [container dismissViewControllerAnimated:YES completion:^{
+        // UIKit has finished the presentation teardown; now it is safe to
+        // detach our compact embedded host from Jade.
+        [weakSelf cleanup];
+    }];
 }
 
 - (void)hideJadeBehindNativePlatter {
@@ -839,6 +862,7 @@ static UIViewController *JCOwningViewController(UIView *view) {
     self.presentationContext = nil;
     self.jadeViewsToHide = nil;
     self.jadeViewsOriginalHidden = nil;
+    self.dismissalRequested = NO;
 
     if (gNativeConnectivitySession == self) {
         gNativeConnectivitySession = nil;

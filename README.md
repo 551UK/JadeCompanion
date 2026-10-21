@@ -67,3 +67,10 @@ The only changes over v0.6.5 are:
 ## v0.6.12 dismissal lifecycle fix
 
 Keeps the working v0.6.11 native Connectivity platter, Airplane Mode behaviour and Apple's normal outside-tap dismissal path. It removes four manual beginAppearanceTransition:/endAppearanceTransition calls that JadeCompanion was incorrectly sending to the expanded container while Apple's click-presentation interaction was already driving that lifecycle. Stock CCUIModuleCollectionViewController changes sibling-module appearance instead of re-entering the expanded container's own appearance transition.
+
+
+## v0.6.13 Jade dismissal crash fix
+
+The SpringBoard crash log identifies Jade.dylib as the exception source during `CCUIContentModuleContainerViewController dismissModulePresentedContentAnimated:completion:`: Jade indexes element 0 of an empty mutable array. v0.6.13 therefore does not call `dismissPresentedContentAnimated:` or `dismissExpandedModuleAnimated:` for JadeCompanion's embedded Connectivity platter. Both feed through the crashing Jade hook.
+
+Outside-tap dismissal now jumps directly to the same final UIKit operation that ControlCenterUI's `_closeExpandedModule:` eventually uses: `dismissViewControllerAnimated:completion:`. Jade is restored before the animation and the temporary embedded host is removed only in UIKit's completion block. Airplane Mode and platter presentation are unchanged.
