@@ -406,6 +406,53 @@ static UIViewController *JCDetailControllerForAction(UIViewController *connectiv
     return nil;
 }
 
+static void JCRefreshConnectivityButtonStates(UIViewController *connectivityController) {
+    if (!connectivityController) return;
+
+    NSMutableArray *buttons = [NSMutableArray array];
+
+    id buttonArray = JCObjectForPossibleNames(connectivityController,
+                                               @[@"buttonViewControllers",
+                                                 @"portraitButtonViewControllers"]);
+    if ([buttonArray isKindOfClass:[NSArray class]]) {
+        [buttons addObjectsFromArray:(NSArray *)buttonArray];
+    }
+
+    // Fallback for iOS builds where the array accessor is unavailable or not
+    // populated yet. These are Apple's stock ConnectivityModule properties.
+    if (buttons.count == 0) {
+        NSArray<NSString *> *names = @[
+            @"airplaneButton",
+            @"cellularDataButton",
+            @"wifiButton",
+            @"bluetoothButton",
+            @"airDropButton",
+            @"hotspotButton"
+        ];
+
+        for (NSString *name in names) {
+            id button = JCObjectForPossibleNames(connectivityController, @[name]);
+            if (button && ![buttons containsObject:button]) {
+                [buttons addObject:button];
+            }
+        }
+    }
+
+    for (id button in buttons) {
+        JCVoidBool(button, @"containerWillTransitionToExpandedContentMode:", YES);
+
+        SEL observe = NSSelectorFromString(@"startObservingStateChangesIfNecessary");
+        if ([button respondsToSelector:observe]) {
+            ((void (*)(id, SEL))objc_msgSend)(button, observe);
+        }
+
+        SEL update = NSSelectorFromString(@"_updateState");
+        if ([button respondsToSelector:update]) {
+            ((void (*)(id, SEL))objc_msgSend)(button, update);
+        }
+    }
+}
+
 #pragma mark - Native Control Center platter
 
 typedef struct {
@@ -622,6 +669,11 @@ static UIViewController *JCOwningViewController(UIView *view) {
     if (!container) return;
 
     if (container.view.window) {
+        id content = JCObjectForSelector(container, @"contentViewController");
+        if ([content isKindOfClass:[UIViewController class]]) {
+            JCRefreshConnectivityButtonStates((UIViewController *)content);
+        }
+
         SEL expand = NSSelectorFromString(@"expandModule");
         if ([container respondsToSelector:expand]) {
             ((void (*)(id, SEL))objc_msgSend)(container, expand);
@@ -684,33 +736,37 @@ static UIViewController *JCOwningViewController(UIView *view) {
 
 - (void)contentModuleContainerViewController:(id)controller
                   willOpenExpandedModule:(id)module {
-    // Stock Control Center lets the private click-presentation interaction
-    // own the expanded container's appearance transition.
+    // Swap Jade out at the START of Apple's stock expansion instead of after
+    // it finishes. The compact stock Connectivity module is already aligned
+    // behind Jade, so this leaves one continuous native expansion rather than
+    // Jade and the stock platter visually crossing over each other.
+    [self hideJadeBehindNativePlatter];
 }
 
 - (void)contentModuleContainerViewController:(id)controller
                    didOpenExpandedModule:(id)module {
-    // Make sure Apple's expanded Airplane controller is observing the real
-    // radio state. This uses its own stock methods and adds no global hook.
+    // Refresh every stock connectivity button, not just Airplane Mode. This
+    // makes Wi-Fi, Bluetooth, Cellular Data, Airplane Mode, AirDrop and
+    // Personal Hotspot render Apple's real current ON/OFF appearance.
     id content = JCObjectForSelector(self.containerViewController,
                                      @"contentViewController");
-    if ([content isKindOfClass:[UIViewController class]]) {
-        id airplane = JCFindChildController((UIViewController *)content,
-                                            JCConnectivityActionAirplane);
-        SEL observe = NSSelectorFromString(@"startObservingStateChangesIfNecessary");
-        SEL update = NSSelectorFromString(@"_updateState");
-        if (airplane && [airplane respondsToSelector:observe]) {
-            ((void (*)(id, SEL))objc_msgSend)(airplane, observe);
-        }
-        if (airplane && [airplane respondsToSelector:update]) {
-            ((void (*)(id, SEL))objc_msgSend)(airplane, update);
-        }
-    }
+    if (![content isKindOfClass:[UIViewController class]]) return;
 
-    // At this point Apple's own expansion animation has completed, so the
-    // compact Jade card is no longer needed as a visual source. Hide only
-    // the Jade views that existed before we inserted the stock module.
-    [self hideJadeBehindNativePlatter];
+    UIViewController *connectivityController = (UIViewController *)content;
+    JCRefreshConnectivityButtonStates(connectivityController);
+
+    // Some of Apple's state monitors publish on the next run-loop after the
+    // expanded view appears. Refresh once more shortly after opening so an
+    // already-enabled radio cannot remain visually stale/grey.
+    __weak UIViewController *weakConnectivityController = connectivityController;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(0.12 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIViewController *strongController = weakConnectivityController;
+        if (strongController) {
+            JCRefreshConnectivityButtonStates(strongController);
+        }
+    });
 }
 
 - (void)contentModuleContainerViewController:(id)controller
