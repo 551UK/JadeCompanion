@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository
@@ -39,16 +39,16 @@ jobs:
       - name: Publish GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          tag: v0.6.6
-          name: JadeCompanion v0.6.6
+          tag: v0.6.7
+          name: JadeCompanion v0.6.7
           prerelease: false
           draft: false
           body: |
             Fixes Jade's broken connectivity hold menus on iOS 16.
 
-            Hold Wi-Fi, Bluetooth, Cellular Data or Airplane Mode to open Apple's native expanded Connectivity platter using the stock Control Center Haptic Touch presentation path. The native backdrop no longer hides Jade's own view hierarchy, outside-tap teardown waits for UIKit to fully finish, and Airplane Mode falls back to the real RadiosPreferences state only if Apple's stock tap did not change it. AirDrop keeps its existing dedicated menu path.
+            Hold Wi-Fi, Bluetooth, Cellular Data or Airplane Mode to open Apple's native expanded Connectivity platter. v0.6.7 is a stability reset based on the last known-loading v0.6.5 code: the v0.6.6 global Airplane hook and custom root-window backdrop are removed. AirDrop keeps its existing dedicated menu path.
 
-            Normal taps still toggle through Jade. Holding a button opens its menu without toggling it, and the old blur-only bug remains fixed.
+            Normal taps still toggle through Jade. Native platter teardown is delayed until after Apple's close animation, and Airplane state is refreshed using the stock controller without a global method hook.
           artifacts: packages/*.deb
           artifactErrorsFailBuild: true
           allowUpdates: true
@@ -59,9 +59,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Only remove older releases after v0.6.6 has been published.
-          gh release view v0.6.6
-          for tag in v0.6.2 v0.6.3 v0.6.4 v0.6.5; do
+          # Only remove older releases after v0.6.7 has been published.
+          gh release view v0.6.7
+          for tag in v0.6.2 v0.6.3 v0.6.4 v0.6.5 v0.6.6; do
             if gh release view "$tag" >/dev/null 2>&1; then
               gh release delete "$tag" --cleanup-tag --yes
             fi

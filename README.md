@@ -54,8 +54,11 @@ Because Jade is no longer left stuck in its broken expanded state, the old **blu
 - Close the menu, then try another short tap: Jade's normal toggling should still work.
 
 
-## v0.6.6 behaviour
 
-- The native Connectivity platter uses an opaque dark surface and dedicated backdrop, so Jade cannot show through it without hiding or altering Jade's own view hierarchy.
-- Tapping outside uses the stock Control Center close path; teardown waits until both ControlCenterUI and UIKit have completely finished the presentation transition before detaching anything.
-- Airplane Mode uses Apple's stock toggle first. If the real `RadiosPreferences` state did not change, JadeCompanion applies the intended state and refreshes the native button.
+## v0.6.7 stability reset
+
+v0.6.7 is rebuilt from the last known-loading v0.6.5 source. The v0.6.6 global Airplane Mode method hook, custom full-screen backdrop, and extra presentation teardown code have all been removed.
+
+The only changes over v0.6.5 are:
+- native platter cleanup is delayed until after Apple's close animation;
+- the stock expanded Airplane controller is asked to observe and refresh its real radio state when the platter opens.
