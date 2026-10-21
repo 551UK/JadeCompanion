@@ -37,7 +37,7 @@ This caused two problems:
 
 JadeCompanion catches the connectivity hold before Jade goes down the broken path.
 
-Instead of drawing its own replacement window, JadeCompanion now uses Apple's own `CCUIContentModuleContainerViewController` Haptic Touch presentation path for Wi-Fi, Bluetooth, Airplane Mode and Cellular Data.
+Instead of drawing its own replacement window, JadeCompanion now uses Apple's own `CCUIContentModuleContainerViewController` Haptic Touch presentation path for Wi-Fi, Bluetooth, Airplane Mode and Cellular Data. While that native platter is open, Jade's card is temporarily hidden so the two interfaces cannot overlap; Jade is restored before the native close animation.
 
 In simple terms:
 

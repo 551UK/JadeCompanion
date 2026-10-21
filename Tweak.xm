@@ -429,8 +429,13 @@ static UIViewController *JCOwningViewController(UIView *view) {
 @property (nonatomic, strong) id connectivityModule;
 @property (nonatomic, strong) id contentModuleContext;
 @property (nonatomic, strong) id presentationContext;
+@property (nonatomic, strong) NSArray<UIView *> *jadeViewsToHide;
+@property (nonatomic, strong) NSArray<NSNumber *> *jadeViewsOriginalHidden;
+@property (nonatomic, assign) BOOL jadeViewsHidden;
 - (BOOL)installForSourceView:(UIView *)sourceView;
 - (void)expandWhenReady:(NSUInteger)attempt;
+- (void)hideJadeBehindNativePlatter;
+- (void)restoreJadeBehindNativePlatter;
 - (void)cleanup;
 @end
 
@@ -519,6 +524,19 @@ static UIViewController *JCOwningViewController(UIView *view) {
                                               setMaterialGroupName,
                                               @"CCUIContentModuleContainerViewControllerGroupName");
     }
+
+    // Snapshot Jade's current visual subviews before adding the invisible
+    // stock Connectivity module. When Apple's native platter has finished
+    // opening, these are temporarily hidden so Jade cannot show through it.
+    // Their original hidden states are restored before the close animation.
+    NSMutableArray<UIView *> *jadeViews = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *jadeHiddenStates = [NSMutableArray array];
+    for (UIView *view in parent.view.subviews) {
+        [jadeViews addObject:view];
+        [jadeHiddenStates addObject:@(view.hidden)];
+    }
+    self.jadeViewsToHide = jadeViews;
+    self.jadeViewsOriginalHidden = jadeHiddenStates;
 
     UIView *wrapper = nil;
     SEL wrapperInit = NSSelectorFromString(@"initWithModuleIdentifier:options:");
@@ -664,10 +682,18 @@ static UIViewController *JCOwningViewController(UIView *view) {
 
 - (void)contentModuleContainerViewController:(id)controller
                    didOpenExpandedModule:(id)module {
+    // At this point Apple's own expansion animation has completed, so the
+    // compact Jade card is no longer needed as a visual source. Hide only
+    // the Jade views that existed before we inserted the stock module.
+    [self hideJadeBehindNativePlatter];
 }
 
 - (void)contentModuleContainerViewController:(id)controller
                  willCloseExpandedModule:(id)module {
+    // Restore Jade before Apple's collapse animation starts so the native
+    // platter has a real compact target to animate back toward.
+    [self restoreJadeBehindNativePlatter];
+
     [self.containerViewController beginAppearanceTransition:NO animated:NO];
     [self.containerViewController endAppearanceTransition];
 }
@@ -728,7 +754,40 @@ static UIViewController *JCOwningViewController(UIView *view) {
     return size;
 }
 
+- (void)hideJadeBehindNativePlatter {
+    if (self.jadeViewsHidden) return;
+
+    NSUInteger count = MIN(self.jadeViewsToHide.count,
+                           self.jadeViewsOriginalHidden.count);
+    for (NSUInteger index = 0; index < count; index++) {
+        UIView *view = self.jadeViewsToHide[index];
+        // Do not touch Apple's stock module if the hierarchy changed.
+        if (view == self.moduleContainerView ||
+            [view isDescendantOfView:self.moduleContainerView]) {
+            continue;
+        }
+        view.hidden = YES;
+    }
+    self.jadeViewsHidden = YES;
+}
+
+- (void)restoreJadeBehindNativePlatter {
+    if (!self.jadeViewsHidden) return;
+
+    NSUInteger count = MIN(self.jadeViewsToHide.count,
+                           self.jadeViewsOriginalHidden.count);
+    for (NSUInteger index = 0; index < count; index++) {
+        UIView *view = self.jadeViewsToHide[index];
+        view.hidden = self.jadeViewsOriginalHidden[index].boolValue;
+    }
+    self.jadeViewsHidden = NO;
+}
+
 - (void)cleanup {
+    // Covers cancellation/interruption paths where Control Center does not
+    // deliver the normal willClose callback.
+    [self restoreJadeBehindNativePlatter];
+
     UIViewController *container = self.containerViewController;
     if (container) {
         SEL willResignActive = NSSelectorFromString(@"willResignActive");
@@ -753,6 +812,8 @@ static UIViewController *JCOwningViewController(UIView *view) {
     self.connectivityModule = nil;
     self.contentModuleContext = nil;
     self.presentationContext = nil;
+    self.jadeViewsToHide = nil;
+    self.jadeViewsOriginalHidden = nil;
 
     if (gNativeConnectivitySession == self) {
         gNativeConnectivitySession = nil;
