@@ -964,6 +964,7 @@ static BOOL JCPresentNativeConnectivityPlatter(UIView *sourceView) {
 @property (nonatomic, strong) UIViewController *detailController;
 @property (nonatomic, strong) id contentModuleContext;
 @property (nonatomic, strong) id connectivityModule;
+@property (nonatomic, assign) BOOL fastOpenAnimation;
 - (void)showController:(UIViewController *)controller;
 @end
 
@@ -1008,6 +1009,30 @@ static BOOL JCPresentNativeConnectivityPlatter(UIView *sourceView) {
 
     dismissTap.cancelsTouchesInView = NO;
     [self.view addGestureRecognizer:dismissTap];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+
+    if (self.fastOpenAnimation) {
+        self.view.alpha = 0.0;
+        self.panelView.transform = CGAffineTransformMakeScale(0.965, 0.965);
+    }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+
+    if (!self.fastOpenAnimation) return;
+
+    [UIView animateWithDuration:0.15
+                          delay:0.0
+                        options:UIViewAnimationOptionCurveEaseOut |
+                                UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+        self.view.alpha = 1.0;
+        self.panelView.transform = CGAffineTransformIdentity;
+    } completion:nil];
 }
 
 - (void)outsideTap:(UITapGestureRecognizer *)recognizer {
@@ -1120,72 +1145,62 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
 
     JCConnectivityHostViewController *host = [JCConnectivityHostViewController new];
     host.modalPresentationStyle = UIModalPresentationOverFullScreen;
-    host.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
     host.contentModuleContext = context;
     host.connectivityModule = module;
     host.connectivityController = connectivityController;
+    host.fastOpenAnimation = YES;
+
+    // Build the final AirDrop menu BEFORE presenting the host. The old path
+    // presented the generic Connectivity controller, waited 0.18 seconds, then
+    // swapped to AirDrop, which made the opening feel slow and visibly staged.
+    UIViewController *detail = nil;
+    if (action == JCConnectivityActionAirDrop ||
+        action == JCConnectivityActionBluetooth) {
+        detail = JCDetailControllerForAction(connectivityController, action);
+    }
+
+    // Force the host view to load so its width constraint exists before the
+    // finished detail controller is installed.
+    (void)host.view;
+
+    if (detail) {
+        host.detailController = detail;
+
+        SEL platter = NSSelectorFromString(@"setShouldProvideOwnPlatter:");
+        if ([detail respondsToSelector:platter]) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(detail, platter, YES);
+        }
+
+        if (action == JCConnectivityActionAirDrop) {
+            SEL preferredWidthSel =
+                NSSelectorFromString(@"preferredExpandedContentWidth");
+            if ([detail respondsToSelector:preferredWidthSel]) {
+                CGFloat preferredWidth =
+                    ((CGFloat (*)(id, SEL))objc_msgSend)(detail,
+                                                         preferredWidthSel);
+
+                CGFloat maxWidth =
+                    MIN(UIScreen.mainScreen.bounds.size.width - 28.0, 390.0);
+                if (preferredWidth >= 280.0 &&
+                    preferredWidth <= maxWidth) {
+                    host.panelWidthConstraint.constant = preferredWidth;
+                }
+            }
+        }
+
+        [host showController:detail];
+    } else {
+        [host showController:connectivityController];
+    }
+
+    [host.view setNeedsLayout];
+    [host.view layoutIfNeeded];
 
     gCurrentHost = host;
 
-    [presenter presentViewController:host animated:YES completion:^{
-        [host showController:connectivityController];
-
-        // Wi-Fi, Cellular Data and Airplane Mode intentionally stay on
-        // Apple's expanded six-button Connectivity panel. Only Bluetooth and
-        // AirDrop drill into their existing native detail menus.
-        if (action == JCConnectivityActionBluetooth ||
-            action == JCConnectivityActionAirDrop) {
-
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                         (int64_t)(0.18 * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                UIViewController *detail =
-                    JCDetailControllerForAction(connectivityController, action);
-
-                if (detail) {
-                    host.detailController = detail;
-
-                    SEL platter = NSSelectorFromString(@"setShouldProvideOwnPlatter:");
-                    if ([detail respondsToSelector:platter]) {
-                        ((void (*)(id, SEL, BOOL))objc_msgSend)(detail, platter, YES);
-                    }
-
-                    if (action == JCConnectivityActionAirDrop) {
-                        // The AirDrop menu has its own preferred Control Center
-                        // width, which is narrower than our generic 390pt host.
-                        // Match the outer platter to that width so the dark menu
-                        // rows terminate exactly at the rounded panel edge.
-                        SEL preferredWidthSel =
-                            NSSelectorFromString(@"preferredExpandedContentWidth");
-                        if ([detail respondsToSelector:preferredWidthSel]) {
-                            CGFloat preferredWidth =
-                                ((CGFloat (*)(id, SEL))objc_msgSend)(detail,
-                                                                     preferredWidthSel);
-
-                            CGFloat maxWidth =
-                                MIN(UIScreen.mainScreen.bounds.size.width - 28.0,
-                                    390.0);
-                            if (preferredWidth >= 280.0 &&
-                                preferredWidth <= maxWidth) {
-                                host.panelWidthConstraint.constant = preferredWidth;
-                                [host.view layoutIfNeeded];
-                            }
-                        }
-                    }
-
-                    // These Apple detail controllers normally receive a complete
-                    // Control Center appearance lifecycle. Our host swaps them in
-                    // after presentation, so explicitly drive that lifecycle in
-                    // showController:. Bluetooth in particular refreshes its device
-                    // list from viewWillAppear:.
-                    [host showController:detail];
-                } else {
-                    NSLog(@"[JadeCompanion] %@ detail unavailable; showing stock Connectivity instead",
-                          JCActionName(action));
-                }
-            });
-        }
-    }];
+    // No UIKit modal transition here. The host performs one short 0.15s
+    // fade/scale animation with the final AirDrop content already in place.
+    [presenter presentViewController:host animated:NO completion:nil];
 }
 
 #pragma mark - Jade's existing long press
