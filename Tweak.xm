@@ -959,6 +959,7 @@ static BOOL JCPresentNativeConnectivityPlatter(UIView *sourceView) {
 @interface JCConnectivityHostViewController : UIViewController
 @property (nonatomic, strong) UIView *panelView;
 @property (nonatomic, strong) UIView *contentView;
+@property (nonatomic, strong) NSLayoutConstraint *panelWidthConstraint;
 @property (nonatomic, strong) UIViewController *connectivityController;
 @property (nonatomic, strong) UIViewController *detailController;
 @property (nonatomic, strong) id contentModuleContext;
@@ -991,10 +992,14 @@ static BOOL JCPresentNativeConnectivityPlatter(UIView *sourceView) {
     CGFloat width = MIN(UIScreen.mainScreen.bounds.size.width - 28.0, 390.0);
     CGFloat height = MIN(MAX(UIScreen.mainScreen.bounds.size.height * 0.42, 320.0), 470.0);
 
+    NSLayoutConstraint *panelWidth =
+        [panel.widthAnchor constraintEqualToConstant:width];
+    self.panelWidthConstraint = panelWidth;
+
     [NSLayoutConstraint activateConstraints:@[
         [panel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [panel.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor constant:10.0],
-        [panel.widthAnchor constraintEqualToConstant:width],
+        panelWidth,
         [panel.heightAnchor constraintEqualToConstant:height],
     ]];
 
@@ -1146,29 +1151,25 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
                     }
 
                     if (action == JCConnectivityActionAirDrop) {
-                        // Apple's menu controller supports a true non-indented
-                        // layout. JadeCompanion's custom host is already the
-                        // platter, so remove the inner menu indentation that was
-                        // leaving the dark option rows short on both sides.
-                        SEL indented = NSSelectorFromString(@"setUseIndentedLayout:");
-                        if ([detail respondsToSelector:indented]) {
-                            ((void (*)(id, SEL, BOOL))objc_msgSend)(detail,
-                                                                   indented,
-                                                                   NO);
-                        }
+                        // The AirDrop menu has its own preferred Control Center
+                        // width, which is narrower than our generic 390pt host.
+                        // Match the outer platter to that width so the dark menu
+                        // rows terminate exactly at the rounded panel edge.
+                        SEL preferredWidthSel =
+                            NSSelectorFromString(@"preferredExpandedContentWidth");
+                        if ([detail respondsToSelector:preferredWidthSel]) {
+                            CGFloat preferredWidth =
+                                ((CGFloat (*)(id, SEL))objc_msgSend)(detail,
+                                                                     preferredWidthSel);
 
-                        SEL indentation = NSSelectorFromString(@"setIndentation:");
-                        if ([detail respondsToSelector:indentation]) {
-                            ((void (*)(id, SEL, NSUInteger))objc_msgSend)(detail,
-                                                                         indentation,
-                                                                         0);
-                        }
-
-                        SEL trailingInset = NSSelectorFromString(@"setUseTrailingInset:");
-                        if ([detail respondsToSelector:trailingInset]) {
-                            ((void (*)(id, SEL, BOOL))objc_msgSend)(detail,
-                                                                   trailingInset,
-                                                                   NO);
+                            CGFloat maxWidth =
+                                MIN(UIScreen.mainScreen.bounds.size.width - 28.0,
+                                    390.0);
+                            if (preferredWidth >= 280.0 &&
+                                preferredWidth <= maxWidth) {
+                                host.panelWidthConstraint.constant = preferredWidth;
+                                [host.view layoutIfNeeded];
+                            }
                         }
                     }
 
@@ -1178,11 +1179,6 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
                     // showController:. Bluetooth in particular refreshes its device
                     // list from viewWillAppear:.
                     [host showController:detail];
-
-                    if (action == JCConnectivityActionAirDrop) {
-                        [detail.view setNeedsLayout];
-                        [detail.view layoutIfNeeded];
-                    }
                 } else {
                     NSLog(@"[JadeCompanion] %@ detail unavailable; showing stock Connectivity instead",
                           JCActionName(action));
