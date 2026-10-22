@@ -692,6 +692,8 @@ static UIViewController *JCOwningViewController(UIView *view) {
     if (!container) return;
 
     if (container.view.window) {
+        container.view.alpha = 1.0;
+
         id content = JCObjectForSelector(container, @"contentViewController");
         if ([content isKindOfClass:[UIViewController class]]) {
             JCRefreshConnectivityButtonStates((UIViewController *)content);
@@ -794,8 +796,20 @@ static UIViewController *JCOwningViewController(UIView *view) {
 
 - (void)contentModuleContainerViewController:(id)controller
                  willCloseExpandedModule:(id)module {
-    // Restore Jade before Apple's stock collapse animation starts. Do not
-    // manually drive the expanded container's appearance lifecycle here.
+    // Apple's stock close animation collapses the expanded Connectivity
+    // platter back toward its compact source frame. In Jade that source is
+    // the module area, so the native panel visibly flies/shrinks into Jade.
+    //
+    // Keep Apple's dismissal lifecycle completely intact, but make that
+    // collapse visual invisible. Jade is restored immediately underneath
+    // while ControlCenterUI finishes its transition off-screen.
+    UIViewController *container = self.containerViewController;
+    if (container.viewIfLoaded) {
+        [UIView performWithoutAnimation:^{
+            container.view.alpha = 0.0;
+        }];
+    }
+
     [self restoreJadeBehindNativePlatter];
 }
 
@@ -878,6 +892,15 @@ static UIViewController *JCOwningViewController(UIView *view) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(container,
                                                 setExpanded,
                                                 NO);
+    }
+
+    // Do not show UIKit collapsing the native panel back into the Jade
+    // module. Hide the native container first, restore Jade, then let the
+    // already-proven dismissal path complete invisibly.
+    if (container.viewIfLoaded) {
+        [UIView performWithoutAnimation:^{
+            container.view.alpha = 0.0;
+        }];
     }
 
     [self restoreJadeBehindNativePlatter];
