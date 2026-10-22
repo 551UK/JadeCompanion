@@ -365,6 +365,40 @@ static id JCFindChildController(UIViewController *parent, JCConnectivityAction a
     return nil;
 }
 
+static UIViewController *JCAirDropDetailControllerWithoutExpansion(
+    UIViewController *connectivityController) {
+    id child = JCFindChildController(connectivityController,
+                                     JCConnectivityActionAirDrop);
+    if (!child) return nil;
+
+    // AirDrop's menu can be created directly. Do not call
+    // containerWillTransitionToExpandedContentMode:YES here: that transition
+    // is intended for the real Control Center module and causes the menu to
+    // visually grow out of Jade's module area.
+    SEL airDropSelector = NSSelectorFromString(@"_newAirDropMenuViewController");
+    if ([child respondsToSelector:airDropSelector]) {
+        id detail = ((id (*)(id, SEL))objc_msgSend)(child, airDropSelector);
+        if ([detail isKindOfClass:[UIViewController class]]) {
+            return detail;
+        }
+    }
+
+    // Fallback to Apple's detail factory, still without manually putting the
+    // source controller into expanded mode.
+    SEL detailSelector =
+        NSSelectorFromString(@"presentedViewControllerForContentModuleDetailClickPresentationInteractionController:");
+    if ([child respondsToSelector:detailSelector]) {
+        id detail = ((id (*)(id, SEL, id))objc_msgSend)(child,
+                                                         detailSelector,
+                                                         nil);
+        if ([detail isKindOfClass:[UIViewController class]]) {
+            return detail;
+        }
+    }
+
+    return nil;
+}
+
 static UIViewController *JCDetailControllerForAction(UIViewController *connectivityController,
                                                      JCConnectivityAction action) {
     id child = JCFindChildController(connectivityController, action);
@@ -1005,7 +1039,7 @@ static BOOL JCPresentNativeConnectivityPlatter(UIView *sourceView) {
 
     if (self.fastOpenAnimation) {
         self.view.alpha = 0.0;
-        self.panelView.transform = CGAffineTransformMakeScale(0.965, 0.965);
+        self.panelView.transform = CGAffineTransformIdentity;
     }
 }
 
@@ -1014,13 +1048,12 @@ static BOOL JCPresentNativeConnectivityPlatter(UIView *sourceView) {
 
     if (!self.fastOpenAnimation) return;
 
-    [UIView animateWithDuration:0.15
+    [UIView animateWithDuration:0.08
                           delay:0.0
                         options:UIViewAnimationOptionCurveEaseOut |
                                 UIViewAnimationOptionBeginFromCurrentState
                      animations:^{
         self.view.alpha = 1.0;
-        self.panelView.transform = CGAffineTransformIdentity;
     } completion:nil];
 }
 
@@ -1122,9 +1155,11 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
 
     (void)connectivityController.view;
 
-    JCVoidBool(connectivityController,
-               @"willTransitionToExpandedContentMode:",
-               YES);
+    if (action != JCConnectivityActionAirDrop) {
+        JCVoidBool(connectivityController,
+                   @"willTransitionToExpandedContentMode:",
+                   YES);
+    }
 
     UIViewController *presenter = JCPresenterForView(sourceView);
     if (!presenter) {
@@ -1143,8 +1178,9 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
     // presented the generic Connectivity controller, waited 0.18 seconds, then
     // swapped to AirDrop, which made the opening feel slow and visibly staged.
     UIViewController *detail = nil;
-    if (action == JCConnectivityActionAirDrop ||
-        action == JCConnectivityActionBluetooth) {
+    if (action == JCConnectivityActionAirDrop) {
+        detail = JCAirDropDetailControllerWithoutExpansion(connectivityController);
+    } else if (action == JCConnectivityActionBluetooth) {
         detail = JCDetailControllerForAction(connectivityController, action);
     }
 
@@ -1187,8 +1223,8 @@ static void JCPresentStockConnectivity(UIView *sourceView, JCConnectivityAction 
 
     gCurrentHost = host;
 
-    // No UIKit modal transition here. The host performs one short 0.15s
-    // fade/scale animation with the final AirDrop content already in place.
+    // No UIKit modal or module-expansion transition here. AirDrop is already
+    // in its final layout and the host only performs a tiny opacity fade.
     [presenter presentViewController:host animated:NO completion:nil];
 }
 
